@@ -1,0 +1,12 @@
+---
+BasedOnStyle: Google
+Language: Cpp
+Standard: c++17
+IndentWidth: 2
+TabWidth: 2
+UseTab: Never
+AccessModifierOffset: -2
+NamespaceIndentation: None
+PointerAlignment: Left
+DerivePointerAlignment: false
+ColumnLimit: 120

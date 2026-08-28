@@ -1,0 +1,12 @@
+/build
+/build-*
+/cmake-build-*
+Testing/
+out/
+*.deb
+*.rpm
+*.tar.gz
+*.zip
+.DS_Store
+*.log
+superpowers
