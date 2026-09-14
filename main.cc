@@ -14,6 +14,7 @@
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -40,6 +41,7 @@
 #include "src/cli/interface_name.h"
 #include "src/cli/play.h"
 #include "src/cli/pms.h"
+#include "src/cli/slave_config.h"
 #include "src/cli/stress.h"
 #include "src/cli/zero.h"
 #include "src/driver_version.h"
@@ -299,7 +301,8 @@ bool IsConfigItemName(const std::string& value) {
 }
 
 bool IsControlModeName(const std::string& value) {
-  static const std::unordered_set<std::string> modes = {"pvt", "position", "speed", "current", "torque", "brake"};
+  static const std::unordered_set<std::string> modes = {"pvt",    "position", "speed", "current",
+                                                        "torque", "stop",     "brake"};
   return modes.find(value) != modes.end();
 }
 
@@ -667,13 +670,13 @@ bool SetConfigValue(encos::Motor& motor, const CliCommand& command) {
   throw std::runtime_error("Unsupported config item");
 }
 
-encos::MotorStopMode ToMotorStopMode(BrakeMode mode) {
+encos::MotorStopMode ToMotorStopMode(StopMode mode) {
   switch (mode) {
-    case BrakeMode::Full:
+    case StopMode::Full:
       return encos::MotorStopMode::FullBrake;
-    case BrakeMode::Dynamic:
+    case StopMode::Dynamic:
       return encos::MotorStopMode::DynamicBrake;
-    case BrakeMode::Regenerative:
+    case StopMode::Regenerative:
       return encos::MotorStopMode::RegenerativeBrake;
   }
   return encos::MotorStopMode::FullBrake;
@@ -692,9 +695,11 @@ encos::MotorFeedbackMsg1 SendControlCommand(encos::Motor& motor, const ControlCo
       return motor.CurControl<1>(values[0]);
     case ControlItem::Torque:
       return motor.TorControl<1>(values[0]);
-    case ControlItem::Brake: {
-      const float current = command.brake_mode == BrakeMode::Full ? 0.0F : values[0];
-      return motor.Stop<1>(ToMotorStopMode(command.brake_mode), current);
+    case ControlItem::Brake:
+      throw std::runtime_error("Mechanical brake is a one-shot command");
+    case ControlItem::Stop: {
+      const float current = command.stop_mode == StopMode::Full ? 0.0F : values[0];
+      return motor.Stop<1>(ToMotorStopMode(command.stop_mode), current);
     }
   }
   throw std::runtime_error("Unsupported control mode");
@@ -745,6 +750,7 @@ int RunCli(int argc, char** argv) {
 
   CliCommand command;
   try {
+    if (auto status = RunSlaveConfig(arguments)) return *status;
     command = ParseCliCommand(arguments);
   } catch (const std::exception& error) {
     std::cerr << "Error: " << error.what() << '\n';
@@ -813,8 +819,27 @@ int RunScan(int argc, char** argv) {
   }
 
   try {
+    const bool slaves = std::find(arguments.begin(), arguments.end(), "--slave") != arguments.end();
+    arguments.erase(std::remove(arguments.begin(), arguments.end(), "--slave"), arguments.end());
     const ScanCommand command = ParseScanCommand(arguments);
     const ScanTarget& target = command.target;
+    if (slaves) {
+      if (target.adapter_type != "Ethernet" && !IsEthercatPlugin(target.adapter_type))
+        throw std::runtime_error("Slave scan does not support device: " + target.adapter_type);
+      if (target.adapter_id.empty() || target.bus_id || target.slave_id)
+        throw std::runtime_error("Slave scan requires Plugin:Interface without slave/bus selectors");
+      std::vector<SlaveScanRow> rows;
+      if (target.adapter_type == "Ethernet")
+        rows = ScanEthernetSlaves(target.adapter_id);
+      else {
+        auto adapter = OpenScanAdapter(target);
+        std::set<unsigned> indices;
+        for (const auto& bus : adapter->GetBuses()) indices.insert(static_cast<unsigned>(bus.first) >> 16);
+        for (auto index : indices) rows.push_back({index, {}});
+      }
+      std::cout << FormatSlaveTable(rows);
+      return 0;
+    }
     if (target.adapter_id.empty()) {
       PrintAvailableInterfaces(target.adapter_type);
       return 0;
@@ -880,6 +905,27 @@ int RunControl(int argc, char** argv) {
 
   try {
     std::vector<ResolvedMotorTarget> targets = ResolveMotorTargets(command.target);
+    if (command.item == ControlItem::Brake) {
+      bool had_failure = false;
+      for (ResolvedMotorTarget& target : targets) {
+        try {
+          EnsureMotorInitialized(target);
+          if (command.canfd) {
+            target.motor->EnableCanFd();
+          }
+          if (!target.motor->Brake(command.brake_enabled)) {
+            throw std::runtime_error("Mechanical brake state was not acknowledged");
+          }
+          std::cout << FormatTargetPrefix(target, command.target)
+                    << (command.brake_enabled ? " brake engaged\n" : " brake released\n");
+        } catch (const std::exception& error) {
+          had_failure = true;
+          std::cerr << FormatTargetPrefix(target, command.target) << " error: " << error.what() << '\n';
+        }
+      }
+      return had_failure ? 1 : 0;
+    }
+
     std::vector<float> kts;
     kts.reserve(targets.size());
     for (ResolvedMotorTarget& target : targets) {
@@ -1058,6 +1104,7 @@ int Run(int argc, char** argv) {
   argparse::ArgumentParser zero_command("zero");
 
   tui_command.add_argument("adapters").help("Adapter preload list: AdapterType:AdapterId").remaining();
+  scan_command.add_argument("--slave").default_value(false).implicit_value(true).help("Scan slaves and UUIDs");
   scan_command.add_argument("args").help("Scan command: <AdapterType[:AdapterId[:BusId]]>").remaining();
   config_command.add_argument("args").help("Config command: <target> <item> [set <values>]").remaining();
   control_command.add_argument("args").help("Control command: <mode> <target> <values>").remaining();
@@ -1098,7 +1145,11 @@ int Run(int argc, char** argv) {
   }
 
   try {
-    program.parse_args(argc, argv);
+    if (argc >= 2 && std::string(argv[1]) == "play") {
+      program.parse_args(NormalizePlayLogArguments(std::vector<std::string>(argv, argv + argc)));
+    } else {
+      program.parse_args(argc, argv);
+    }
   } catch (const std::runtime_error& error) {
     if (ContainsHelpRequest(argc, argv)) {
       if (argc >= 2) {

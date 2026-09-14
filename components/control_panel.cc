@@ -241,13 +241,89 @@ ftxui::Component CreateTorqueSection(AppState& app_state) {
   return ftxui::Container::Vertical({title, ftxui::Container::Horizontal({torque_row, gap, filler, button})});
 }
 
+enum class BrakeResultKind {
+  Ready,
+  Success,
+  Error,
+};
+
+struct BrakeResult {
+  std::string message{"Ready"};
+  BrakeResultKind kind{BrakeResultKind::Ready};
+};
+
+ftxui::ButtonOption CreateBrakeButtonOption(ftxui::Color accent) {
+  ftxui::ButtonOption option;
+  option.transform = [accent](const ftxui::EntryState& state) {
+    ftxui::Element element =
+        ftxui::text(state.label) | ftxui::center | ftxui::bold | ftxui::borderRounded | ftxui::color(accent);
+    if (state.focused) {
+      element |= ftxui::inverted;
+    }
+    return element;
+  };
+  return option;
+}
+
 ftxui::Component CreateBrakeSection(AppState& app_state) {
-  static std::vector<std::string> kBrakeModes = {"Full Brake", "Dynamic Brake", "Regenerative Brake"};
+  auto result = std::make_shared<BrakeResult>();
+  auto apply = [&app_state, result](bool enabled) {
+    const auto selected = app_state.GetSelectedMotor();
+    if (!selected || !selected->motor) {
+      result->message = "No motor";
+      result->kind = BrakeResultKind::Error;
+      return;
+    }
+    try {
+      if (selected->motor->Brake(enabled)) {
+        result->message = enabled ? "Engaged" : "Released";
+        result->kind = BrakeResultKind::Success;
+      } else {
+        result->message = "No ACK";
+        result->kind = BrakeResultKind::Error;
+      }
+    } catch (const std::exception& error) {
+      result->message = std::string("Failed: ") + error.what();
+      result->kind = BrakeResultKind::Error;
+    }
+  };
+
+  ftxui::Component engage = ftxui::Button(
+                                "Engage", [apply] { apply(true); }, CreateBrakeButtonOption(ftxui::Color::RedLight)) |
+                            ftxui::size(ftxui::WIDTH, ftxui::EQUAL, 13);
+  ftxui::Component release =
+      ftxui::Button(
+          "Release", [apply] { apply(false); }, CreateBrakeButtonOption(ftxui::Color::GreenLight)) |
+      ftxui::size(ftxui::WIDTH, ftxui::EQUAL, 13);
+  ftxui::Component action_gap = ftxui::Renderer([] { return ftxui::text(" "); });
+  ftxui::Component status_gap = ftxui::Renderer([] { return ftxui::text(" "); });
+  ftxui::Component status =
+      ftxui::Renderer([result] {
+        ftxui::Color status_color = ftxui::Color::GrayLight;
+        if (result->kind == BrakeResultKind::Success) {
+          status_color = ftxui::Color::GreenLight;
+        } else if (result->kind == BrakeResultKind::Error) {
+          status_color = ftxui::Color::RedLight;
+        }
+        return ftxui::hbox({ftxui::text("Status: ") | ftxui::dim, ftxui::paragraph(result->message) | ftxui::bold |
+                                                                      ftxui::color(status_color) | ftxui::flex}) |
+               ftxui::vcenter;
+      }) |
+      ftxui::flex;
+
+  return ftxui::Container::Vertical({
+      ftxui::Renderer([] { return ftxui::text("Brake (mechanical)"); }),
+      ftxui::Container::Horizontal({engage, action_gap, release, status_gap, status}),
+  });
+}
+
+ftxui::Component CreateStopSection(AppState& app_state) {
+  static std::vector<std::string> kStopModes = {"Full Brake", "Dynamic Brake", "Regenerative Brake"};
 
   ControlPanelState& state = app_state.control_panel_state;
-  ftxui::Component title = CreateModeTitle(app_state, "Brake", ControlMode::Brake);
+  ftxui::Component title = CreateModeTitle(app_state, "Stop (electronic)", ControlMode::Stop);
   ftxui::Component mode_label = ftxui::Renderer([] { return ftxui::text("Mode:      "); });
-  ftxui::Component mode_toggle = ftxui::Toggle(&kBrakeModes, &state.brake_mode_index) | ftxui::flex;
+  ftxui::Component mode_toggle = ftxui::Toggle(&kStopModes, &state.stop_mode_index) | ftxui::flex;
   ftxui::Component mode_row = ftxui::Container::Horizontal({mode_label, mode_toggle}) | ftxui::flex;
   ftxui::Component current_row = CreateSliderRow(
       "Cur: ", &state.current_slider, [] { return 0.0f; }, [&state] { return state.current_max; },
@@ -258,22 +334,22 @@ ftxui::Component CreateBrakeSection(AppState& app_state) {
                                 "Apply",
                                 [&app_state, &state] {
                                   app_state.UpdateControlCommand([&](ControlCommandState& command) {
-                                    command.mode = ControlMode::Brake;
-                                    switch (state.brake_mode_index) {
+                                    command.mode = ControlMode::Stop;
+                                    switch (state.stop_mode_index) {
                                       case 0:
-                                        command.brake_params.mode = encos::MotorStopMode::FullBrake;
+                                        command.stop_params.mode = encos::MotorStopMode::FullBrake;
                                         break;
                                       case 1:
-                                        command.brake_params.mode = encos::MotorStopMode::DynamicBrake;
+                                        command.stop_params.mode = encos::MotorStopMode::DynamicBrake;
                                         break;
                                       case 2:
-                                        command.brake_params.mode = encos::MotorStopMode::RegenerativeBrake;
+                                        command.stop_params.mode = encos::MotorStopMode::RegenerativeBrake;
                                         break;
                                       default:
-                                        command.brake_params.mode = encos::MotorStopMode::FullBrake;
+                                        command.stop_params.mode = encos::MotorStopMode::FullBrake;
                                         break;
                                     }
-                                    command.brake_params.current =
+                                    command.stop_params.current =
                                         Interpolate(0.0f, state.current_max, state.current_slider);
                                   });
                                 },
@@ -343,8 +419,8 @@ void ControlRuntime::RunLoop() {
           case ControlMode::Torque:
             selected_motor->motor->TorControl<0>(command.torque_params.torque);
             break;
-          case ControlMode::Brake:
-            selected_motor->motor->Stop<0>(command.brake_params.mode, command.brake_params.current);
+          case ControlMode::Stop:
+            selected_motor->motor->Stop<0>(command.stop_params.mode, command.stop_params.current);
             break;
           case ControlMode::None:
             break;
@@ -376,6 +452,8 @@ ftxui::Component CreateControlPanel(AppState& app_state) {
       CreateCurrentSection(app_state),
       CreateSeparator(),
       CreateTorqueSection(app_state),
+      CreateSeparator(),
+      CreateStopSection(app_state),
       CreateSeparator(),
       CreateBrakeSection(app_state),
   });

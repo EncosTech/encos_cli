@@ -40,12 +40,12 @@ TEST_CASE("emcli version reports the runtime driver version or the compatibility
 }
 
 TEST_CASE("Runtime driver version must be within the supported range when available") {
-  CHECK(std::string(GetSupportedEncosDriverVersionRequirement()) == "3.2.0 <= libencosdriver < 3.3.0");
+  CHECK(std::string(GetSupportedEncosDriverVersionRequirement()) == "3.3.0 <= libencosdriver < 3.4.0");
   CHECK(IsSupportedEncosDriverVersion(std::nullopt));
-  CHECK_FALSE(IsSupportedEncosDriverVersion(std::string("3.1.9")));
-  CHECK(IsSupportedEncosDriverVersion(std::string("3.2.0")));
-  CHECK(IsSupportedEncosDriverVersion(std::string("3.2.1")));
-  CHECK_FALSE(IsSupportedEncosDriverVersion(std::string("3.3.0")));
+  CHECK_FALSE(IsSupportedEncosDriverVersion(std::string("3.2.9")));
+  CHECK(IsSupportedEncosDriverVersion(std::string("3.3.0")));
+  CHECK(IsSupportedEncosDriverVersion(std::string("3.3.1")));
+  CHECK_FALSE(IsSupportedEncosDriverVersion(std::string("3.4.0")));
   CHECK_FALSE(IsSupportedEncosDriverVersion(std::string("invalid")));
 }
 

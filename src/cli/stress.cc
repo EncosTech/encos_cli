@@ -692,11 +692,16 @@ int RunStressCommand(const argparse::ArgumentParser& parser) {
   const double measurement_seconds =
       std::chrono::duration_cast<std::chrono::duration<double>>(measurement_end - measurement_start).count();
 
+  const auto before_drain = AggregateAll(contexts);
   std::this_thread::sleep_for(std::chrono::milliseconds(options.drain_delay_ms));
   measurement_active.store(false, std::memory_order_relaxed);
   UnregisterCallbacks(contexts);
 
   alternate_screen.Leave();
+  const auto after_drain = AggregateAll(contexts);
+  std::cout << "\nDrain wait: " << options.drain_delay_ms
+            << " ms; additional replies: " << (after_drain.received - before_drain.received)
+            << "; outstanding before/after: " << DropCount(before_drain) << "/" << DropCount(after_drain) << '\n';
   const auto final_text = RenderReportText("================ FINAL RESULT ================", contexts,
                                            measurement_seconds, motor_cli::StressLiveDetailLevel::Full);
   PrintReportSnapshot({final_text, 0}, false, &has_appended_report);

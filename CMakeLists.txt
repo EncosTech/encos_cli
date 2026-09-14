@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(EncosMotorCLI VERSION 1.11.0)
+project(EncosMotorCLI VERSION 1.13.0)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -9,10 +9,11 @@ endif()
 
 set(FTXUI_ENABLE_INSTALL OFF)
 option(EMCLI_BUILD_TESTS "Build emcli tests" OFF)
-find_package(encos_driver 3.2.0 REQUIRED)
+find_package(encos_driver 3.3.0 REQUIRED)
 find_package(Threads REQUIRED)
 add_subdirectory(external/ftxui)
 add_subdirectory(external/argparse)
+add_subdirectory(external/serialib)
 add_subdirectory(external/nanobench)
 
 # === emcli ===
@@ -31,6 +32,7 @@ add_executable(
   src/cli/glove.cc
   src/cli/imu.cc
   src/cli/interface_name.cc
+  src/cli/slave_config.cc
   src/cli/pms.cc
   src/cli/play.cc
   src/cli/stress.cc
@@ -60,6 +62,7 @@ target_link_libraries(
     ${CMAKE_DL_LIBS}
     Threads::Threads
     nanobench::nanobench
+    serialib
 )
 
 if(EMCLI_BUILD_TESTS)
@@ -69,6 +72,7 @@ if(EMCLI_BUILD_TESTS)
     emcli_tests
     tests/test_main.cc
     tests/cli_command_test.cc
+    tests/slave_config_test.cc
     tests/control_panel_test.cc
     tests/bench_parser_test.cc
     tests/play_parser_test.cc
@@ -83,6 +87,7 @@ if(EMCLI_BUILD_TESTS)
     src/cli/glove.cc
     src/cli/imu.cc
     src/cli/interface_name.cc
+  src/cli/slave_config.cc
     src/cli/pms.cc
     src/cli/play.cc
     src/cli/stress.cc
@@ -121,11 +126,18 @@ if(EMCLI_BUILD_TESTS)
       ${CMAKE_DL_LIBS}
       Threads::Threads
       nanobench::nanobench
+    serialib
   )
 
   add_dependencies(emcli_tests emcli)
 
   add_test(NAME emcli_tests COMMAND emcli_tests)
+  find_package(Python3 COMPONENTS Interpreter REQUIRED)
+  add_test(NAME slave_cdc_integration COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/slave_cdc_integration.py $<TARGET_FILE:emcli>)
+  add_test(NAME slave_udp_integration COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/slave_udp_integration.py $<TARGET_FILE:emcli>)
+  set_tests_properties(slave_cdc_integration slave_udp_integration PROPERTIES RUN_SERIAL TRUE TIMEOUT 20)
 
   add_executable(
     emzero_tests
@@ -178,13 +190,13 @@ set(CPACK_PACKAGE_VENDOR "Encos")
 set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Encos Maintainer")
 set(CPACK_DEBIAN_PACKAGE_VERSION "${PROJECT_VERSION}")
 set(CPACK_DEBIAN_FILE_NAME "DEB-DEFAULT")
-set(CPACK_DEBIAN_PACKAGE_DEPENDS "libencosdriver (>= 3.2.0)")
+set(CPACK_DEBIAN_PACKAGE_DEPENDS "libencosdriver (>= 3.3.0), libencosdriver (<< 3.4.0)")
 set(CPACK_DEBIAN_PACKAGE_SECTION "utils")
 set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
 
 set(CPACK_RPM_PACKAGE_LICENSE "Proprietary")
 set(CPACK_RPM_PACKAGE_GROUP "Applications/Engineering")
-set(CPACK_RPM_PACKAGE_REQUIRES "libencosdriver >= 3.2.0")
+set(CPACK_RPM_PACKAGE_REQUIRES "libencosdriver >= 3.3.0, libencosdriver < 3.4.0")
 
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
 set(CPACK_RESOURCE_FILE_README "${CMAKE_CURRENT_SOURCE_DIR}/README.md")

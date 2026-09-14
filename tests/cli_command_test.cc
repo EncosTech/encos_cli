@@ -483,9 +483,9 @@ TEST_CASE("ParseControlCommand parses continuous control commands") {
   CHECK(torque.item == ControlItem::Torque);
   REQUIRE(torque.values.size() == 1U);
 
-  const ControlCommand brake = ParseControlCommand({"control", "brake", "Ethercat:eth0:0:1", "dynamic", "2"});
-  CHECK(brake.item == ControlItem::Brake);
-  CHECK(brake.brake_mode == BrakeMode::Dynamic);
+  const ControlCommand brake = ParseControlCommand({"control", "stop", "Ethercat:eth0:0:1", "dynamic", "2"});
+  CHECK(brake.item == ControlItem::Stop);
+  CHECK(brake.stop_mode == StopMode::Dynamic);
   REQUIRE(brake.values.size() == 1U);
   CHECK(brake.values[0] == doctest::Approx(2.0f));
 }
@@ -529,8 +529,8 @@ TEST_CASE("ParseControlCommand validates mode and arity") {
   CHECK_THROWS_AS(ParseControlCommand({"control", "speed", "Ethercat:eth0:0:1", "1"}), std::runtime_error);
   CHECK_THROWS_AS(ParseControlCommand({"control", "current", "Ethercat:eth0:0:1"}), std::runtime_error);
   CHECK_THROWS_AS(ParseControlCommand({"control", "torque", "Ethercat:eth0:0:1"}), std::runtime_error);
-  CHECK_THROWS_AS(ParseControlCommand({"control", "brake", "Ethercat:eth0:0:1", "invalid", "2"}), std::runtime_error);
-  CHECK_THROWS_AS(ParseControlCommand({"control", "brake", "Ethercat:eth0:0:1", "full", "1"}), std::runtime_error);
+  CHECK_THROWS_AS(ParseControlCommand({"control", "stop", "Ethercat:eth0:0:1", "invalid", "2"}), std::runtime_error);
+  CHECK_THROWS_AS(ParseControlCommand({"control", "stop", "Ethercat:eth0:0:1", "full", "1"}), std::runtime_error);
   CHECK_THROWS_AS(ParseControlCommand({"control", "--canfd", "current", "Ethercat:eth0:0:1", "1", "--canfd"}),
                   std::runtime_error);
 }
@@ -736,6 +736,35 @@ TEST_CASE("Battery report aligns a fault-free status in the value column") {
   const encos::BatteryStatus status{};
 
   CHECK(BuildBatteryReport(status).find("error                 none\n") != std::string::npos);
+}
+
+TEST_CASE("electronic stop supports full and regenerative modes") {
+  const auto full = ParseControlCommand({"control", "stop", "Ethercat:eth0:0:1", "full"});
+  CHECK(full.item == ControlItem::Stop);
+  CHECK(full.stop_mode == StopMode::Full);
+  CHECK(full.values.empty());
+  const auto regenerative = ParseControlCommand({"control", "stop", "Ethercat:eth0:0:1", "regenerative", "2"});
+  CHECK(regenerative.item == ControlItem::Stop);
+  CHECK(regenerative.stop_mode == StopMode::Regenerative);
+  REQUIRE(regenerative.values.size() == 1U);
+  CHECK(regenerative.values[0] == doctest::Approx(2.0f));
+  CHECK_THROWS_AS(ParseControlCommand({"control", "stop", "Ethercat:eth0:0:1", "dynamic"}), std::runtime_error);
+  CHECK_THROWS_AS(ParseControlCommand({"control", "stop", "Ethercat:eth0:0:1", "engage"}), std::runtime_error);
+}
+
+TEST_CASE("mechanical brake requires explicit engage or release") {
+  for (const auto& action : {"engage", "release"}) {
+    const auto command = ParseControlCommand({"control", "--canfd", "brake", "Ethercat:eth0:0:ALL", action});
+    CHECK(command.item == ControlItem::Brake);
+    CHECK(command.brake_enabled == (std::string(action) == "engage"));
+    CHECK(command.canfd);
+    CHECK(command.values.empty());
+  }
+  for (const auto& action : {"full", "dynamic", "regenerative", "invalid"}) {
+    CHECK_THROWS_AS(ParseControlCommand({"control", "brake", "Ethercat:eth0:0:1", action}), std::runtime_error);
+  }
+  CHECK_THROWS_AS(ParseControlCommand({"control", "brake", "Ethercat:eth0:0:1"}), std::runtime_error);
+  CHECK_THROWS_AS(ParseControlCommand({"control", "brake", "Ethercat:eth0:0:1", "engage", "1"}), std::runtime_error);
 }
 
 }  // namespace

@@ -60,7 +60,7 @@ enum class ControlMode {
   Speed,
   Current,
   Torque,
-  Brake,
+  Stop,
 };
 
 struct PvtParams {
@@ -90,7 +90,7 @@ struct TorqueParams {
   float torque{0.0f};
 };
 
-struct BrakeParams {
+struct StopParams {
   encos::MotorStopMode mode{encos::MotorStopMode::FullBrake};
   float current{0.0f};
 };
@@ -102,7 +102,7 @@ struct ControlCommandState {
   SpeedParams speed_params;
   CurrentParams current_params;
   TorqueParams torque_params;
-  BrakeParams brake_params;
+  StopParams stop_params;
 };
 
 struct ControlPanelState {
@@ -137,7 +137,7 @@ struct ControlPanelState {
 
   float torque_control_slider{0.5f};
 
-  int brake_mode_index{0};
+  int stop_mode_index{0};
 };
 
 struct SettingsPanelState {

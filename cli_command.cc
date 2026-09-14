@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "components/math_constants.h"
+#include "src/cli/slave_config.h"
 
 namespace motor_cli {
 namespace {
@@ -609,27 +610,35 @@ ControlCommand ParseControlCommand(const std::vector<std::string>& arguments) {
     return command;
   }
   if (mode == "brake") {
-    if (parsed_arguments.size() < 4U) {
-      throw std::runtime_error("Control mode 'brake' expects brake mode");
+    if (parsed_arguments.size() != 4U || (parsed_arguments[3] != "engage" && parsed_arguments[3] != "release")) {
+      throw std::runtime_error("Mechanical brake expects engage or release; use 'control stop' for electronic braking");
     }
     command.item = ControlItem::Brake;
-    const std::string& brake_mode = parsed_arguments[3];
-    if (brake_mode == "full") {
-      command.brake_mode = BrakeMode::Full;
+    command.brake_enabled = parsed_arguments[3] == "engage";
+    return command;
+  }
+  if (mode == "stop") {
+    if (parsed_arguments.size() < 4U) {
+      throw std::runtime_error("Control mode 'stop' expects stop mode");
+    }
+    command.item = ControlItem::Stop;
+    const std::string& stop_mode = parsed_arguments[3];
+    if (stop_mode == "full") {
+      command.stop_mode = StopMode::Full;
       if (parsed_arguments.size() != 4U) {
-        throw std::runtime_error("Control mode 'brake full' does not accept current");
+        throw std::runtime_error("Control mode 'stop full' does not accept current");
       }
       return command;
     }
-    if (brake_mode == "dynamic") {
-      command.brake_mode = BrakeMode::Dynamic;
-    } else if (brake_mode == "regenerative") {
-      command.brake_mode = BrakeMode::Regenerative;
+    if (stop_mode == "dynamic") {
+      command.stop_mode = StopMode::Dynamic;
+    } else if (stop_mode == "regenerative") {
+      command.stop_mode = StopMode::Regenerative;
     } else {
-      throw std::runtime_error("Unknown brake mode: '" + brake_mode + "'");
+      throw std::runtime_error("Unknown stop mode: '" + stop_mode + "'");
     }
     if (parsed_arguments.size() != 5U) {
-      throw std::runtime_error("Control mode 'brake " + brake_mode + "' expects max_current_a");
+      throw std::runtime_error("Control mode 'stop " + stop_mode + "' expects max_current_a");
     }
     command.values.push_back(ParseControlFloat(parsed_arguments[4], "Current"));
     return command;
@@ -684,6 +693,7 @@ std::string BuildTuiHelp() {
 
 std::string BuildScanHelp() {
   std::ostringstream output;
+  output << "Slave scan: emcli scan --slave <Ethernet|Ethercat-related-plugin>:<Interface>\n";
   output << "Usage:\n"
          << "  emcli scan <AdapterType>\n"
          << "  emcli scan <AdapterType:AdapterId[:BusId]>\n"
@@ -706,6 +716,7 @@ std::string BuildScanHelp() {
 
 std::string BuildConfigHelp() {
   std::ostringstream output;
+  output << SlaveConfigHelp() << "\n";
   output << "Usage:\n"
          << "  emcli config [--canfd] <target> <item>\n"
          << "  emcli config [--canfd] <target> <item> set <values>\n"
@@ -807,9 +818,10 @@ std::string BuildControlHelp() {
          << "  speed <speed_rad_s> <max_current_a>\n"
          << "  current <current_a>\n"
          << "  torque <torque_nm>\n"
-         << "  brake full\n"
-         << "  brake dynamic <max_current_a>\n"
-         << "  brake regenerative <max_current_a>\n"
+         << "  brake engage|release (mechanical brake, one-shot)\n"
+         << "  stop full\n"
+         << "  stop dynamic <max_current_a>\n"
+         << "  stop regenerative <max_current_a>\n"
          << "\n"
          << "Target:\n"
          << "  AdapterType:AdapterId:ALL\n"
@@ -819,7 +831,8 @@ std::string BuildControlHelp() {
          << "  AdapterType:AdapterId:SlaveId:BusId:MotorId\n"
          << "\n"
          << "Output:\n"
-         << "  Feedback is printed as a fixed-width table every 0.5s.\n"
+         << "  Mechanical brake executes once and reports acknowledgement per motor.\n"
+         << "  Other modes: feedback is printed as a fixed-width table every 0.5s.\n"
          << "  The table header is repeated every 10 feedback rows.\n"
          << "  Press q or Ctrl-C to exit.\n"
          << "\n"
@@ -830,9 +843,9 @@ std::string BuildControlHelp() {
          << "  emcli control speed Ethercat:eth0:3:0:1 15 2\n"
          << "  emcli control current Ethercat:eth0:3:0:1 1.5\n"
          << "  emcli control torque Ethercat:eth0:3:0:1 0.8\n"
-         << "  emcli control brake Ethercat:eth0:3:0:1 full\n"
-         << "  emcli control brake Ethercat:eth0:3:0:1 dynamic 2\n"
-         << "  emcli control brake Ethercat:eth0:3:0:1 regenerative 2\n";
+         << "  emcli control stop Ethercat:eth0:3:0:1 full\n"
+         << "  emcli control stop Ethercat:eth0:3:0:1 dynamic 2\n"
+         << "  emcli control stop Ethercat:eth0:3:0:1 regenerative 2\n";
   return output.str();
 }
 
@@ -850,9 +863,13 @@ std::string BuildControlModeHelp(const std::string& mode) {
   } else if (mode == "torque") {
     output << "  emcli control [--canfd] torque <target> <torque_nm>\n";
   } else if (mode == "brake") {
-    output << "  emcli control [--canfd] brake <target> full\n"
-           << "  emcli control [--canfd] brake <target> dynamic <max_current_a>\n"
-           << "  emcli control [--canfd] brake <target> regenerative <max_current_a>\n";
+    output << "  emcli control [--canfd] brake <target> engage|release\n"
+           << "\nMechanical brake: engage holds, release unlocks. Executes once and reports acknowledgement.\n";
+    return output.str();
+  } else if (mode == "stop") {
+    output << "  emcli control [--canfd] stop <target> full\n"
+           << "  emcli control [--canfd] stop <target> dynamic <max_current_a>\n"
+           << "  emcli control [--canfd] stop <target> regenerative <max_current_a>\n";
   } else {
     return BuildControlHelp();
   }

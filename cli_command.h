@@ -52,10 +52,11 @@ enum class ControlItem {
   Speed,
   Current,
   Torque,
+  Stop,
   Brake,
 };
 
-enum class BrakeMode {
+enum class StopMode {
   Full,
   Dynamic,
   Regenerative,
@@ -72,7 +73,8 @@ struct CliCommand {
 struct ControlCommand {
   MotorTarget target;
   ControlItem item{ControlItem::Pvt};
-  BrakeMode brake_mode{BrakeMode::Full};
+  StopMode stop_mode{StopMode::Full};
+  bool brake_enabled{false};
   bool canfd{false};
   std::vector<float> values;
 };

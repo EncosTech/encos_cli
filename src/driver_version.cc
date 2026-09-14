@@ -9,7 +9,7 @@
 
 namespace {
 
-constexpr const char* kSupportedEncosDriverVersionRange = "3.2.0 <= libencosdriver < 3.3.0";
+constexpr const char* kSupportedEncosDriverVersionRange = "3.3.0 <= libencosdriver < 3.4.0";
 using EncosDriverVersionFunction = const char* (*)();
 
 bool ParseVersionComponent(std::string_view text, std::uint32_t* value) {
@@ -80,8 +80,8 @@ bool IsSupportedEncosDriverVersion(const std::optional<std::string>& version) {
     return false;
   }
 
-  constexpr std::array<std::uint32_t, 3> kMinimumVersion{3, 2, 0};
-  constexpr std::array<std::uint32_t, 3> kMaximumVersion{3, 3, 0};
+  constexpr std::array<std::uint32_t, 3> kMinimumVersion{3, 3, 0};
+  constexpr std::array<std::uint32_t, 3> kMaximumVersion{3, 4, 0};
   return parsed_version >= kMinimumVersion && parsed_version < kMaximumVersion;
 }
 

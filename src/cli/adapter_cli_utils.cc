@@ -60,7 +60,9 @@ std::vector<AdapterSpec> ResolveAdapterSpecs(const std::vector<std::string>& raw
       continue;
     }
 
-    if (type_interfaces.find(id) == type_interfaces.end()) {
+    // Ethernet endpoints include a remote IPv4 address and cannot be enumerated locally.
+    // MakeAdapter validates the explicit endpoint before opening the connection.
+    if (type != "Ethernet" && type_interfaces.find(id) == type_interfaces.end()) {
       throw std::runtime_error("Unknown adapter id '" + id + "' for type '" + type + "'");
     }
 
