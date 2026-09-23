@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "components/control_panel.h"
 
 #include <chrono>

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "components/graph_panel.h"
 
 #include <algorithm>

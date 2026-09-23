@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "src/trajectory_player.h"
 
 #include <doctest.hpp>

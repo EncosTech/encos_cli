@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "src/cli/slave_config.h"
 
 #include <arpa/inet.h>

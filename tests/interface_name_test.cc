@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "src/cli/interface_name.h"
 
 #include <doctest.hpp>

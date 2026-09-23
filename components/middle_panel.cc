@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "components/middle_panel.h"
 
 #include <memory>

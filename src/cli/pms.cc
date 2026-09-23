@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "src/cli/pms.h"
 
 #include <encos/encos_motor.h>

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "components/left_panel.h"
 
 #include <algorithm>

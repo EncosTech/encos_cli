@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include <argparse/argparse.hpp>
 #include <array>
 #include <cstdio>

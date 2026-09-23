@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Run emcli against a loopback EMM1 peer; validate retries and stop-on-error."""
 import socket,struct,subprocess,sys,time
 binary=sys.argv[1]

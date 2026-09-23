@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "src/trajectory_csv_parser.h"
 
 #include <doctest.hpp>

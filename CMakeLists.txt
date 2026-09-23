@@ -1,5 +1,7 @@
+# SPDX-License-Identifier: MIT
+
 cmake_minimum_required(VERSION 3.14)
-project(EncosMotorCLI VERSION 1.13.0)
+project(EncosMotorCLI VERSION 1.13.1)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -194,7 +196,7 @@ set(CPACK_DEBIAN_PACKAGE_DEPENDS "libencosdriver (>= 3.3.0), libencosdriver (<< 
 set(CPACK_DEBIAN_PACKAGE_SECTION "utils")
 set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
 
-set(CPACK_RPM_PACKAGE_LICENSE "Proprietary")
+set(CPACK_RPM_PACKAGE_LICENSE "MIT")
 set(CPACK_RPM_PACKAGE_GROUP "Applications/Engineering")
 set(CPACK_RPM_PACKAGE_REQUIRES "libencosdriver >= 3.3.0, libencosdriver < 3.4.0")
 

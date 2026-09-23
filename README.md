@@ -3,7 +3,7 @@ Encos Motor Debugger
 
 简介
 
-Encos Motor Debugger 是一个基于终端的调试与监控工具，用于与 Encos 电机驱动交互（使用 FTXUI 提供界面）。本项目为闭源专有软件。
+Encos Motor Debugger 是一个基于终端的调试与监控工具，用于与 Encos 电机驱动交互（使用 FTXUI 提供界面）。本项目采用 [MIT 许可证](LICENSE)。第三方依赖遵循各自的许可证，详见相应依赖的许可证文件。
 
 依赖
 

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+
 set -euo pipefail
 
 # 判断 motor_cli 的 CMakeLists.txt 中的项目版本号是否发生变化。

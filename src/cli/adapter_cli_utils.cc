@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "src/cli/adapter_cli_utils.h"
 
 #include <iostream>

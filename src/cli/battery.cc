@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "src/cli/battery.h"
 
 #include <encos/battery/battery.h>

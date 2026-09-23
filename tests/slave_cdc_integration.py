@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+
 """Exercise real serialib against a PTY, including stop-on-save-failure."""
 import os, pty, select, subprocess, sys, time
 binary=sys.argv[1]

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include <sys/select.h>
 #include <termios.h>
 #include <unistd.h>

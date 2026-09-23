@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "src/cli/play.h"
 
 #include <encos/adapter/fake_adapter_control.h>

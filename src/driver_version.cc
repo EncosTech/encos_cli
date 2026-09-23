@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #include "src/driver_version.h"
 
 #include <dlfcn.h>
