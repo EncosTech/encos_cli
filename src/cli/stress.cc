@@ -4,11 +4,6 @@
 
 #include <encos/encos_motor.h>
 #include <encos/utils/thread_priority.h>
-#include <pthread.h>
-#include <sched.h>
-#include <sys/ioctl.h>
-#include <sys/mman.h>
-#include <unistd.h>
 
 #include <algorithm>
 #include <argparse/argparse.hpp>
@@ -31,6 +26,7 @@
 #include <vector>
 
 #include "src/cli/adapter_cli_utils.h"
+#include "src/cli/platform_compat.h"
 
 namespace {
 
@@ -85,15 +81,8 @@ struct TerminalSize {
 
 void HandleSigInt(int) { g_stop_requested = 1; }
 
-bool SetCurrentThreadAffinity(int cpu_index) {
-  cpu_set_t cpuset;
-  CPU_ZERO(&cpuset);
-  CPU_SET(cpu_index, &cpuset);
-  return pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset) == 0;
-}
-
 std::vector<int> StressSenderCpuCandidates() {
-  const long cpu_count = sysconf(_SC_NPROCESSORS_ONLN);
+  const int cpu_count = motor_cli::platform::CpuCount();
   if (cpu_count <= 0) {
     return {};
   }
@@ -121,7 +110,7 @@ std::optional<int> StressSenderCpuIndex(std::size_t sender_index) {
 }
 
 void ConfigureMemoryLockHints() {
-  if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) {
+  if (!motor_cli::platform::TryLockMemoryPages()) {
     std::cerr << "Warning: Failed to lock memory pages. Run as root or with elevated privileges." << std::endl;
   }
 }
@@ -134,7 +123,7 @@ void ConfigureSenderThreadHints(std::size_t sender_index) {
   }
 
   const auto cpu_index = StressSenderCpuIndex(sender_index);
-  if (cpu_index.has_value() && !SetCurrentThreadAffinity(*cpu_index)) {
+  if (cpu_index.has_value() && !motor_cli::platform::SetCurrentThreadAffinity(*cpu_index)) {
     std::cerr << "Warning: Failed to set CPU affinity for sender thread" << ". Run as root or with elevated privileges."
               << std::endl;
   }
@@ -414,11 +403,11 @@ std::string RenderReportText(const std::string& title, const std::vector<Adapter
 }
 
 std::optional<TerminalSize> GetTerminalSize() {
-  struct winsize size {};
-  if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) != 0 || size.ws_col == 0 || size.ws_row == 0) {
+  const auto dimensions = motor_cli::platform::GetTerminalDimensions();
+  if (!dimensions.has_value()) {
     return std::nullopt;
   }
-  return TerminalSize{size.ws_col, size.ws_row};
+  return TerminalSize{static_cast<std::size_t>(dimensions->columns), static_cast<std::size_t>(dimensions->rows)};
 }
 
 RenderedReport RenderLiveReport(const std::vector<AdapterContext>& contexts, double measurement_seconds,
@@ -455,14 +444,7 @@ RenderedReport RenderLiveReport(const std::vector<AdapterContext>& contexts, dou
   return {overview, rows.overview};
 }
 
-bool SupportsInPlaceRefresh() {
-  if (isatty(STDOUT_FILENO) == 0) {
-    return false;
-  }
-
-  const char* term = std::getenv("TERM");
-  return term != nullptr && std::string(term) != "dumb" && GetTerminalSize().has_value();
-}
+bool SupportsInPlaceRefresh() { return motor_cli::platform::SupportsInPlaceRefresh() && GetTerminalSize().has_value(); }
 
 class AlternateScreenGuard {
 public:
@@ -584,6 +566,7 @@ StressLiveDetailLevel SelectStressLiveDetailLevel(std::size_t terminal_rows, con
 void ConfigureStressCommand(argparse::ArgumentParser& parser) {
   parser.add_description("Stress test one or more adapters");
   AddAdapterArgument(parser);
+  AddAdapterTimingArguments(parser);
   parser.add_argument("--plugin-path").help("Override plugin directory path").metavar("PATH");
   parser.add_argument("--loop-period-ms")
       .help("Sender loop period in milliseconds")

@@ -13,8 +13,12 @@
 #include "src/cli/bench.h"
 #include "src/cli/play.h"
 #include "src/cli/stress.h"
-#include "src/cli/zero.h"
 #include "src/driver_version.h"
+
+#if defined(_WIN32)
+#define popen _popen
+#define pclose _pclose
+#endif
 
 namespace motor_cli {
 namespace {
@@ -42,12 +46,12 @@ TEST_CASE("emcli version reports the runtime driver version or the compatibility
 }
 
 TEST_CASE("Runtime driver version must be within the supported range when available") {
-  CHECK(std::string(GetSupportedEncosDriverVersionRequirement()) == "3.3.0 <= libencosdriver < 3.4.0");
+  CHECK(std::string(GetSupportedEncosDriverVersionRequirement()) == "4.0.0 <= libencosdriver < 4.1.0");
   CHECK(IsSupportedEncosDriverVersion(std::nullopt));
-  CHECK_FALSE(IsSupportedEncosDriverVersion(std::string("3.2.9")));
-  CHECK(IsSupportedEncosDriverVersion(std::string("3.3.0")));
-  CHECK(IsSupportedEncosDriverVersion(std::string("3.3.1")));
-  CHECK_FALSE(IsSupportedEncosDriverVersion(std::string("3.4.0")));
+  CHECK_FALSE(IsSupportedEncosDriverVersion(std::string("3.9.9")));
+  CHECK(IsSupportedEncosDriverVersion(std::string("4.0.0")));
+  CHECK(IsSupportedEncosDriverVersion(std::string("4.0.5")));
+  CHECK_FALSE(IsSupportedEncosDriverVersion(std::string("4.1.0")));
   CHECK_FALSE(IsSupportedEncosDriverVersion(std::string("invalid")));
 }
 
@@ -76,18 +80,6 @@ TEST_CASE("Stress help output contains stress description") {
   CHECK(help.find("link") != std::string::npos);
   CHECK(help.find("--loop-period-ms") != std::string::npos);
   CHECK(help.find("--plugin-path") != std::string::npos);
-}
-
-TEST_CASE("Zero help output contains zero description") {
-  argparse::ArgumentParser zero_parser("zero");
-  ConfigureZeroCommand(zero_parser);
-  std::ostringstream output;
-  output << zero_parser;
-  const std::string help = output.str();
-  CHECK(help.find("Zero") != std::string::npos);
-  CHECK(help.find("--canfd") != std::string::npos);
-  CHECK(help.find("--dry-run") != std::string::npos);
-  CHECK(help.find("config") != std::string::npos);
 }
 
 TEST_CASE("Play help output contains play description") {
@@ -119,13 +111,6 @@ TEST_CASE("Stress rejects invalid arguments") {
 
   // Missing required link argument
   CHECK_THROWS_AS(stress_parser.parse_args({"stress"}), std::runtime_error);
-}
-
-TEST_CASE("Zero rejects invalid arguments") {
-  argparse::ArgumentParser zero_parser("zero");
-  ConfigureZeroCommand(zero_parser);
-
-  CHECK_THROWS_AS(zero_parser.parse_args({"zero"}), std::runtime_error);
 }
 
 TEST_CASE("Bench parses valid arguments") {
@@ -239,23 +224,6 @@ TEST_CASE("Stress live report progressively folds to fit terminal height") {
   CHECK(motor_cli::SelectStressLiveDetailLevel(4, rows) == motor_cli::StressLiveDetailLevel::Overview);
 }
 
-TEST_CASE("Zero parses valid arguments in mixed order") {
-  argparse::ArgumentParser zero_parser("zero");
-  ConfigureZeroCommand(zero_parser);
-
-  zero_parser.parse_args({"zero", "--canfd", "--dry-run", "points.csv"});
-  CHECK(zero_parser.get<bool>("--canfd"));
-  CHECK(zero_parser.get<bool>("--dry-run"));
-  CHECK(zero_parser.get<std::string>("config") == "points.csv");
-
-  argparse::ArgumentParser zero_parser2("zero");
-  ConfigureZeroCommand(zero_parser2);
-  zero_parser2.parse_args({"zero", "points.csv", "--canfd"});
-  CHECK(zero_parser2.get<bool>("--canfd"));
-  CHECK(!zero_parser2.get<bool>("--dry-run"));
-  CHECK(zero_parser2.get<std::string>("config") == "points.csv");
-}
-
 TEST_CASE("Bench and stress do not contain emd naming") {
   argparse::ArgumentParser bench_parser("bench");
   ConfigureBenchCommand(bench_parser);
@@ -293,15 +261,6 @@ TEST_CASE("emcli stress --help entry prints stress help") {
   CHECK(help.find("--plugin-path") != std::string::npos);
 }
 
-TEST_CASE("emcli zero --help entry prints zero help") {
-  const std::string help = RunEmcli("zero --help");
-  CHECK(!help.empty());
-  CHECK(help.find("Usage: emcli zero") != std::string::npos);
-  CHECK(help.find("--canfd") != std::string::npos);
-  CHECK(help.find("--dry-run") != std::string::npos);
-  CHECK(help.find("config") != std::string::npos);
-}
-
 TEST_CASE("emcli play --help entry prints play help") {
   const std::string help = RunEmcli("play --help");
   CHECK(!help.empty());
@@ -312,16 +271,6 @@ TEST_CASE("emcli play --help entry prints play help") {
   CHECK(help.find("--max-speed") != std::string::npos);
   CHECK(help.find("--max-current") != std::string::npos);
   CHECK(help.find("config") != std::string::npos);
-}
-
-TEST_CASE("emcli top-level help lists zero command") {
-  const std::string help = RunEmcli("--help");
-  CHECK(!help.empty());
-  CHECK(help.find("zero") != std::string::npos);
-  CHECK(help.find("play") != std::string::npos);
-  CHECK(help.find("imu") != std::string::npos);
-  CHECK(help.find("battery") != std::string::npos);
-  CHECK(help.find("pms") != std::string::npos);
 }
 
 TEST_CASE("emcli imu battery and pms --help entries print sensor help") {

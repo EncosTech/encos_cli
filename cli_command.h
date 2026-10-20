@@ -28,7 +28,6 @@ struct MotorTarget {
 enum class ConfigItem {
   Id,
   Position,
-  Calibrate,
   Kt,
   PvtKpRange,
   PvtKdRange,
@@ -40,6 +39,7 @@ enum class ConfigItem {
   SpeedPi,
   PositionPd,
   CanTimeout,
+  Brake,
   CommunicationMode,
 };
 
@@ -103,6 +103,8 @@ struct ScanMotorRow {
 enum class SensorCommandAction {
   Show,
   Clear,
+  Start,
+  Stop,
 };
 
 enum class PmsCommandAction {
@@ -185,17 +187,6 @@ GloveCommand ParseGloveCommand(const std::vector<std::string>& arguments);
 uint16_t ParseUint16(const std::string& value, const std::string& field_name);
 CliCommand ParseCliCommand(const std::vector<std::string>& arguments);
 ControlCommand ParseControlCommand(const std::vector<std::string>& arguments);
-std::string BuildTopLevelHelp();
-std::string BuildTuiHelp();
-std::string BuildScanHelp();
-std::string BuildConfigHelp();
-std::string BuildConfigItemHelp(const std::string& item);
-std::string BuildControlHelp();
-std::string BuildControlModeHelp(const std::string& mode);
-std::string BuildImuHelp();
-std::string BuildBatteryHelp();
-std::string BuildPmsHelp();
-std::string BuildGloveHelp();
 std::string FormatScanHeader();
 std::string FormatScanMotorRow(std::optional<int32_t> slave_id, int32_t bus_id, int motor_id, bool eff, bool canfd);
 std::string FormatScanTable(const std::vector<std::string>& rows);

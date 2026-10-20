@@ -4,7 +4,6 @@
 
 #include <encos/adapter/fake_adapter_control.h>
 #include <encos/encos_motor.h>
-#include <unistd.h>
 
 #include <algorithm>
 #include <argparse/argparse.hpp>
@@ -41,6 +40,8 @@
 #include "ftxui/screen/color.hpp"
 #include "ftxui/screen/screen.hpp"
 #include "src/calibration_config.h"
+#include "src/cli/adapter_cli_utils.h"
+#include "src/cli/platform_compat.h"
 #include "src/trajectory_csv_parser.h"
 
 namespace {
@@ -55,8 +56,8 @@ constexpr auto kReturnTransitionDuration = std::chrono::seconds(2);
 constexpr auto kStressDrainDelay = std::chrono::milliseconds(500);
 constexpr float kDefaultMaxSpeedRadS = 20.0f;
 constexpr float kDefaultMaxCurrentA = 10.0f;
-constexpr double kDegreesToRadians = M_PI / 180.0;
-constexpr double kRadiansToDegrees = 180.0 / M_PI;
+constexpr double kDegreesToRadians = 3.14159265358979323846 / 180.0;
+constexpr double kRadiansToDegrees = 180.0 / 3.14159265358979323846;
 std::atomic<int> g_play_stop_requests{0};
 
 void ClampPlayTuiScroll(PlayTuiState& state) {
@@ -163,7 +164,8 @@ public:
   TrajectoryRunner(bool dry_run, float max_speed_rad_s, float max_current_a, std::optional<float> kp = std::nullopt,
                    std::optional<float> kd = std::nullopt, std::optional<float> vel = std::nullopt,
                    std::optional<float> tor = std::nullopt, int control_frequency_hz = kDefaultControlFrequencyHz,
-                   bool tui = false, std::optional<std::string> log_directory = std::nullopt)
+                   bool tui = false, std::optional<std::string> log_directory = std::nullopt,
+                   nlohmann::json adapter_extend = nlohmann::json::object())
       : dry_run_(dry_run),
         max_speed_rad_s_(max_speed_rad_s),
         max_current_a_(max_current_a),
@@ -174,7 +176,8 @@ public:
         tui_(tui),
         log_directory_(std::move(log_directory)),
         control_period_(std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-            std::chrono::duration<double>(1.0 / static_cast<double>(control_frequency_hz)))) {}
+            std::chrono::duration<double>(1.0 / static_cast<double>(control_frequency_hz)))),
+        adapter_extend_(std::move(adapter_extend)) {}
 
   ~TrajectoryRunner() {
     DisableStressCallbacks();
@@ -191,8 +194,10 @@ public:
       const emzero::AdapterKey key{connection.adapter_type, connection.adapter_id};
       auto adapter_it = adapters_.find(key);
       if (adapter_it == adapters_.end()) {
+        // --dry-run 强制使用 Fake 插件，而 Fake 不实现 extend：不下发信封以免产生无意义告警
+        const nlohmann::json extend = dry_run_ ? nlohmann::json::object() : adapter_extend_;
         encos::BaseAdapterPtr adapter =
-            encos::MakeAdapter(dry_run_ ? "Fake" : key.type, key.id, key.id, encos::LogLevel::Off);
+            encos::MakeAdapter(dry_run_ ? "Fake" : key.type, key.id, key.id, encos::LogLevel::Off, extend);
         if (!adapter) {
           std::cerr << "Failed to create adapter for " << trajectory.motor_names[index] << "\n";
           return false;
@@ -1076,6 +1081,8 @@ private:
   std::string tui_error_;
   std::optional<std::string> log_directory_;
   std::chrono::steady_clock::duration control_period_{kControlPeriod};
+  /// 创建适配器时透传的扩展配置信封（CAN 位时序）；空对象表示全部使用插件默认值
+  nlohmann::json adapter_extend_{nlohmann::json::object()};
   std::vector<float> initial_positions_rad_;
   mutable std::mutex output_mutex_;
   mutable std::string tui_warning_;
@@ -1169,6 +1176,18 @@ std::string PlayMotorErrorName(encos::MotorError error) {
   const auto code = static_cast<unsigned int>(static_cast<std::uint8_t>(error));
   const char* name = "Unknown";
   switch (error) {
+    case encos::MotorError::OutputEncoderError:
+      name = "OutputEncoderError";
+      break;
+    case encos::MotorError::FetOverTemperature:
+      name = "FetOverTemperature";
+      break;
+    case encos::MotorError::OverSpeed:
+      name = "OverSpeed";
+      break;
+    case encos::MotorError::TemperatureWarning:
+      name = "TemperatureWarning";
+      break;
     case encos::MotorError::NoError:
       name = "NoError";
       break;
@@ -1346,6 +1365,7 @@ std::vector<std::string> NormalizePlayLogArguments(const std::vector<std::string
 
 void ConfigurePlayCommand(argparse::ArgumentParser& parser) {
   parser.add_description("Play motors from a trajectory CSV");
+  AddAdapterTimingArguments(parser);
   parser.add_argument("config").help("Path to trajectory CSV file");
   parser.add_argument("--dry-run")
       .default_value(false)
@@ -1415,8 +1435,9 @@ int RunPlayCommand(const argparse::ArgumentParser& parser) {
     return 1;
   }
   const char* terminal = std::getenv("TERM");
-  const bool tui = ShouldUsePlayTui(isatty(STDIN_FILENO) != 0, isatty(STDOUT_FILENO) != 0,
-                                    terminal == nullptr ? "" : terminal, no_inplace_refresh);
+  const bool tui =
+      ShouldUsePlayTui(motor_cli::platform::StdinIsInteractive(), motor_cli::platform::StdoutIsInteractive(),
+                       terminal == nullptr ? "" : terminal, no_inplace_refresh);
   if (log_directory.has_value() && log_directory->empty()) {
     std::cerr << "Error: --log directory must not be empty\n";
     return 1;
@@ -1430,7 +1451,8 @@ int RunPlayCommand(const argparse::ArgumentParser& parser) {
     return 1;
   }
 
-  TrajectoryRunner runner(dry_run, max_speed, max_current, kp, kd, vel, tor, control_frequency_hz, tui, log_directory);
+  TrajectoryRunner runner(dry_run, max_speed, max_current, kp, kd, vel, tor, control_frequency_hz, tui, log_directory,
+                          ReadAdapterTimingOptions(parser).ToExtend());
   try {
     if (!runner.Initialize(trajectory)) {
       return 1;

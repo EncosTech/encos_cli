@@ -2,11 +2,8 @@
 
 #include "src/cli/glove.h"
 
+#include <encos/device/glove/glove.h>
 #include <encos/encos_motor.h>
-#include <encos/glove/glove.h>
-#include <sys/select.h>
-#include <termios.h>
-#include <unistd.h>
 
 #include <atomic>
 #include <chrono>
@@ -23,7 +20,10 @@
 
 #include "cli_command.h"
 #include "components/math_constants.h"
+#include "src/cli/adapter_cli_utils.h"
+#include "src/cli/help_text.h"
 #include "src/cli/interface_name.h"
+#include "src/cli/platform_compat.h"
 
 namespace {
 
@@ -32,30 +32,6 @@ constexpr std::size_t kGloveFingerCount = 5;
 constexpr std::size_t kGloveEncodersPerFinger = 10;
 
 std::atomic<bool> g_stop_requested{false};
-
-class TerminalRawMode {
-public:
-  TerminalRawMode() {
-    if (!isatty(STDIN_FILENO) || tcgetattr(STDIN_FILENO, &original_) != 0) {
-      return;
-    }
-    termios raw = original_;
-    raw.c_lflag = static_cast<tcflag_t>(raw.c_lflag & ~(ICANON | ECHO));
-    raw.c_cc[VMIN] = 0;
-    raw.c_cc[VTIME] = 0;
-    active_ = tcsetattr(STDIN_FILENO, TCSANOW, &raw) == 0;
-  }
-
-  ~TerminalRawMode() {
-    if (active_) {
-      tcsetattr(STDIN_FILENO, TCSANOW, &original_);
-    }
-  }
-
-private:
-  termios original_{};
-  bool active_{false};
-};
 
 void HandleSignal(int) { g_stop_requested.store(true); }
 
@@ -69,25 +45,10 @@ private:
   void (*previous_handler_)(int);
 };
 
-bool QuitKeyPressed() {
-  if (!isatty(STDIN_FILENO)) {
-    return false;
-  }
-  fd_set read_fds;
-  FD_ZERO(&read_fds);
-  FD_SET(STDIN_FILENO, &read_fds);
-  timeval timeout{0, 0};
-  if (select(STDIN_FILENO + 1, &read_fds, nullptr, nullptr, &timeout) <= 0) {
-    return false;
-  }
-  char input = '\0';
-  return read(STDIN_FILENO, &input, 1) == 1 && (input == 'q' || input == 'Q');
-}
-
-encos::Glove* OpenGlove(const motor_cli::GloveTarget& target) {
-  encos::BaseAdapterPtr adapter =
-      encos::MakeAdapter(target.adapter_type, target.adapter_id,
-                         motor_cli::GetLoggerName(target.adapter_type, target.adapter_id), encos::LogLevel::Warn);
+encos::Glove* OpenGlove(const motor_cli::GloveTarget& target, const AdapterTimingOptions& timing) {
+  encos::BaseAdapterPtr adapter = MakeAdapterWithTiming(
+      target.adapter_type, target.adapter_id, motor_cli::GetLoggerName(target.adapter_type, target.adapter_id),
+      encos::LogLevel::Warn, timing);
   if (!adapter) {
     throw std::runtime_error("Failed to create adapter: '" + target.adapter_type + ":" + target.adapter_id + "'");
   }
@@ -230,7 +191,9 @@ int RunGloveCommand(int argc, char** argv) {
   }
 
   motor_cli::GloveCommand command;
+  AdapterTimingOptions timing;
   try {
+    timing = StripAdapterTimingFlags(arguments);
     command = motor_cli::ParseGloveCommand(arguments);
   } catch (const std::exception& error) {
     std::cerr << "Error: " << error.what() << '\n' << motor_cli::BuildGloveHelp();
@@ -238,19 +201,18 @@ int RunGloveCommand(int argc, char** argv) {
   }
 
   try {
-    encos::Glove* glove = OpenGlove(command.target);
+    encos::Glove* glove = OpenGlove(command.target, timing);
     if (command.action == motor_cli::GloveCommandAction::Calibrate) {
       return RunGloveCalibrate(glove, command);
     }
 
     g_stop_requested.store(false);
     SignalGuard sigint_guard(SIGINT);
-    TerminalRawMode terminal_raw_mode;
-    const char* term = std::getenv("TERM");
-    const bool in_place_refresh = isatty(STDOUT_FILENO) != 0 && term != nullptr && std::string(term) != "dumb";
+    motor_cli::platform::TerminalRawMode terminal_raw_mode;
+    const bool in_place_refresh = motor_cli::platform::SupportsInPlaceRefresh();
     std::size_t previous_line_count = 0;
     while (!g_stop_requested.load()) {
-      if (QuitKeyPressed()) {
+      if (motor_cli::platform::QuitKeyPressed()) {
         break;
       }
       const std::string report = BuildGloveReport(glove->GetStatus());

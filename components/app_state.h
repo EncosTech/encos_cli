@@ -146,11 +146,6 @@ struct SettingsPanelState {
   std::string can_id_input;
   std::string position_text{"------"};
   std::string position_result_text;
-  std::string calibrate_min_input{"0"};
-  std::string calibrate_max_input{"0"};
-  std::string calibrate_speed_input{"1"};
-  std::string calibrate_current_input{"2"};
-  std::string calibrate_result_text;
   std::string kt_input;
   std::string pvt_kp_min_input;
   std::string pvt_kp_max_input;

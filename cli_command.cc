@@ -122,7 +122,6 @@ const std::map<std::string, ConfigSpec>& ConfigSpecs() {
   static const std::map<std::string, ConfigSpec> specs{
       {"id", {ConfigItem::Id, 1U}},
       {"position", {ConfigItem::Position, 1U}},
-      {"calibrate", {ConfigItem::Calibrate, 4U}},
       {"kt", {ConfigItem::Kt, 1U}},
       {"pvt-kp-range", {ConfigItem::PvtKpRange, 2U}},
       {"pvt-kd-range", {ConfigItem::PvtKdRange, 2U}},
@@ -134,6 +133,8 @@ const std::map<std::string, ConfigSpec>& ConfigSpecs() {
       {"spd-pi", {ConfigItem::SpeedPi, 2U}},
       {"pos-pd", {ConfigItem::PositionPd, 2U}},
       {"can-timeout", {ConfigItem::CanTimeout, 1U}},
+      {"brake", {ConfigItem::Brake, 1U}},
+      {"barke", {ConfigItem::Brake, 1U}},
       {"comm", {ConfigItem::CommunicationMode, 1U}},
   };
   return specs;
@@ -291,15 +292,26 @@ SensorTarget ParseSensorTarget(const std::string& value) {
 
 SensorCommand ParseImuCommand(const std::vector<std::string>& arguments) {
   if (arguments.size() != 3U || arguments[0] != "imu") {
-    throw std::runtime_error("Invalid imu command, expected: imu show <target>");
-  }
-  if (arguments[1] != "show") {
-    throw std::runtime_error("Unsupported imu action: '" + arguments[1] + "'");
+    throw std::runtime_error("Invalid imu command, expected: imu show <target> or imu <target> <start|stop>");
   }
 
   SensorCommand command;
-  command.action = SensorCommandAction::Show;
-  command.target = ParseSensorTarget(arguments[2]);
+  if (arguments[1] == "show") {
+    command.target = ParseSensorTarget(arguments[2]);
+    return command;
+  }
+  if (arguments[2] == "start") {
+    command.action = SensorCommandAction::Start;
+  } else if (arguments[2] == "stop") {
+    command.action = SensorCommandAction::Stop;
+  } else {
+    throw std::runtime_error("Unsupported imu action: '" + arguments[2] + "'");
+  }
+
+  const std::string& target = arguments[1];
+  // Bus-only shorthand; explicit IMU indices are accepted for compatibility,
+  // but the driver's start/stop commands always control the entire bus.
+  command.target = ParseSensorTarget(SplitColonSeparated(target).size() == 3U ? target + ":0" : target);
   return command;
 }
 
@@ -505,6 +517,18 @@ CliCommand ParseCliCommand(const std::vector<std::string>& arguments) {
   command.target = ParseMotorTarget(parsed_arguments[1]);
   command.item = spec_it->second.item;
 
+  if (command.item == ConfigItem::Brake) {
+    if (parsed_arguments.size() == 3U) {
+      command.operation = ConfigOperation::Read;
+    } else if (parsed_arguments.size() == 4U && (parsed_arguments[3] == "engage" || parsed_arguments[3] == "release")) {
+      command.operation = ConfigOperation::Set;
+      command.values.push_back(parsed_arguments[3]);
+    } else {
+      throw std::runtime_error("Config item 'brake' expects: brake [engage|release] (alias: barke)");
+    }
+    return command;
+  }
+
   if (command.item == ConfigItem::CommunicationMode) {
     if (parsed_arguments.size() != 5U || parsed_arguments[3] != "set") {
       throw std::runtime_error("Config item 'comm' expects: comm set <can|canfd|canopen>");
@@ -520,9 +544,6 @@ CliCommand ParseCliCommand(const std::vector<std::string>& arguments) {
   if (parsed_arguments.size() == 3U) {
     if (command.item == ConfigItem::Id) {
       throw std::runtime_error("Config item 'id' requires set; the current id is already in target");
-    }
-    if (command.item == ConfigItem::Calibrate) {
-      throw std::runtime_error("Config item '" + parsed_arguments[2] + "' requires set values");
     }
     command.operation = ConfigOperation::Read;
     return command;
@@ -647,337 +668,6 @@ ControlCommand ParseControlCommand(const std::vector<std::string>& arguments) {
   }
 
   throw std::runtime_error("Unknown control mode: '" + mode + "'");
-}
-
-std::string BuildTopLevelHelp() {
-  std::ostringstream output;
-  output << "Usage:\n"
-         << "  emcli\n"
-         << "  emcli <command> [args]\n"
-         << "\n"
-         << "Encos Motor terminal debugger and command line configuration tool\n"
-         << "\n"
-         << "Options:\n"
-         << "  -h, --help                 Show this help message and exit\n"
-         << "  -v, --version              Print version information and exit\n"
-         << "\n"
-         << "Commands:\n"
-         << "  tui                        Open TUI, optionally preloading adapters\n"
-         << "  scan                       List adapter interfaces or scan motors\n"
-         << "  config                     Read or set motor configuration\n"
-         << "  control                    Continuously send motor control commands\n"
-         << "  imu                        Show IMU status from a bus device\n"
-         << "  battery                    Show or clear battery status from a bus device\n"
-         << "  pms                        Show or control the power management system\n"
-         << "  glove                      Show or calibrate glove encoders\n"
-         << "  play                       Play motors from a trajectory CSV\n"
-         << "  zero                       Zero motors from a CSV calibration config\n"
-         << "  bench                      Benchmark a single adapter\n"
-         << "  stress                     Stress test one or more adapters\n"
-         << "\n"
-         << "Run 'emcli <command> -h' for command-specific help.\n";
-  return output.str();
-}
-
-std::string BuildTuiHelp() {
-  std::ostringstream output;
-  output << "Usage:\n"
-         << "  emcli\n"
-         << "  emcli tui [AdapterType:AdapterId...]\n"
-         << "\n"
-         << "Open the terminal UI. Adapter arguments preload adapters before showing the UI.\n"
-         << "\n"
-         << "Examples:\n"
-         << "  emcli\n"
-         << "  emcli tui Ethercat:eth0 Ethercat:ALL\n";
-  return output.str();
-}
-
-std::string BuildScanHelp() {
-  std::ostringstream output;
-  output << "Slave scan: emcli scan --slave <Ethernet|Ethercat-related-plugin>:<Interface>\n";
-  output << "Usage:\n"
-         << "  emcli scan <AdapterType>\n"
-         << "  emcli scan <AdapterType:AdapterId[:BusId]>\n"
-         << "  emcli scan <AdapterType:AdapterId:SlaveId:BusId>\n"
-         << "\n"
-         << "Adapter scan output:\n"
-         << "  <adapter_id>\n"
-         << "\n"
-         << "Scan output:\n"
-         << "  slave\\tbus\\tid\\teff\\tcanfd\n"
-         << "  <slave_id>\\t<bus_id>\\t<motor_id>\\t<0|1>\\t<0|1>\n"
-         << "\n"
-         << "Examples:\n"
-         << "  emcli scan Ethercat\n"
-         << "  emcli scan Ethercat:eth0\n"
-         << "  emcli scan Ethercat:eth0:0\n"
-         << "  emcli scan Ethercat:eth0:3:0\n";
-  return output.str();
-}
-
-std::string BuildConfigHelp() {
-  std::ostringstream output;
-  output << SlaveConfigHelp() << "\n";
-  output << "Usage:\n"
-         << "  emcli config [--canfd] <target> <item>\n"
-         << "  emcli config [--canfd] <target> <item> set <values>\n"
-         << "  emcli config [--canfd] <target> comm set <can|canfd|canopen>\n"
-         << "\n"
-         << "Options:\n"
-         << "  --canfd                    Send motor commands with CAN FD frames\n"
-         << "\n"
-         << "Target:\n"
-         << "  AdapterType:AdapterId:ALL\n"
-         << "  AdapterType:AdapterId:BusId:ALL\n"
-         << "  AdapterType:AdapterId:BusId:MotorId\n"
-         << "  AdapterType:AdapterId:SlaveId:BusId:ALL\n"
-         << "  AdapterType:AdapterId:SlaveId:BusId:MotorId\n"
-         << "\n"
-         << "Readable items:\n"
-         << "  position, kt, pvt-kp-range, pvt-kd-range, pvt-pos-range,\n"
-         << "  pvt-spd-range, pvt-tor-range, pvt-cur-range, cur-pi, spd-pi,\n"
-         << "  pos-pd, can-timeout\n"
-         << "\n"
-         << "Set examples:\n"
-         << "  emcli config Ethercat:eth0:0:1 id set 2\n"
-         << "  emcli config Ethercat:eth0:0:ALL kt\n"
-         << "  emcli config Ethercat:eth0:3:0:1 kt set 0.120000\n"
-         << "  emcli config Ethercat:eth0:3:0:1 pvt-kp-range set 1 500\n"
-         << "  emcli config Ethercat:eth0:3:0:1 position set 0\n"
-         << "  emcli config Ethercat:eth0:3:0:1 position set 45\n"
-         << "  emcli config Ethercat:eth0:3:0:1 position reset\n"
-         << "  emcli config Ethercat:eth0:3:0:1 comm set canfd\n"
-         << "  emcli config Ethercat:eth0:3:0:1 calibrate set -90 90 1 2\n";
-  return output.str();
-}
-
-std::string BuildConfigItemHelp(const std::string& item) {
-  std::ostringstream output;
-  output << "Usage:\n";
-  if (item == "comm") {
-    output << "  emcli config [--canfd] <target> comm set <can|canfd|canopen>\n"
-           << "\n"
-           << "Set motor communication mode.\n"
-           << "\n"
-           << "Modes:\n"
-           << "  can\n"
-           << "  canfd\n"
-           << "  canopen\n"
-           << "\n"
-           << "Example:\n"
-           << "  emcli config Ethercat:eth0:3:0:1 comm set canfd\n";
-    return output.str();
-  }
-  if (item == "id") {
-    output << "  emcli config [--canfd] <target> id set <new_id>\n";
-  } else if (item == "position") {
-    output << "  emcli config [--canfd] <target> position\n"
-           << "  emcli config [--canfd] <target> position set <position_deg>\n"
-           << "  emcli config [--canfd] <target> position reset\n";
-  } else if (item == "calibrate") {
-    output << "  emcli config [--canfd] <target> calibrate set <min_deg> <max_deg> <speed_rad_s> <current_a>\n";
-  } else if (item == "kt") {
-    output << "  emcli config [--canfd] <target> kt\n"
-           << "  emcli config [--canfd] <target> kt set <value>\n";
-  } else if (item == "pvt-kp-range" || item == "pvt-kd-range" || item == "pvt-pos-range" || item == "pvt-spd-range" ||
-             item == "pvt-tor-range" || item == "pvt-cur-range") {
-    output << "  emcli config [--canfd] <target> " << item << "\n"
-           << "  emcli config [--canfd] <target> " << item << " set <min> <max>\n";
-  } else if (item == "cur-pi" || item == "spd-pi") {
-    output << "  emcli config [--canfd] <target> " << item << "\n"
-           << "  emcli config [--canfd] <target> " << item << " set <kp> <ki>\n";
-  } else if (item == "pos-pd") {
-    output << "  emcli config [--canfd] <target> pos-pd\n"
-           << "  emcli config [--canfd] <target> pos-pd set <kp> <kd>\n";
-  } else if (item == "can-timeout") {
-    output << "  emcli config [--canfd] <target> can-timeout\n"
-           << "  emcli config [--canfd] <target> can-timeout set <timeout_ms>\n";
-  } else {
-    return BuildConfigHelp();
-  }
-  output << "\n"
-         << "Target:\n"
-         << "  AdapterType:AdapterId:ALL\n"
-         << "  AdapterType:AdapterId:BusId:ALL\n"
-         << "  AdapterType:AdapterId:BusId:MotorId\n"
-         << "  AdapterType:AdapterId:SlaveId:BusId:ALL\n"
-         << "  AdapterType:AdapterId:SlaveId:BusId:MotorId\n";
-  return output.str();
-}
-
-std::string BuildControlHelp() {
-  std::ostringstream output;
-  output << "Usage:\n"
-         << "  emcli control [--canfd] <mode> <target> <values>\n"
-         << "\n"
-         << "Options:\n"
-         << "  --canfd                    Send motor commands with CAN FD frames\n"
-         << "\n"
-         << "Modes:\n"
-         << "  pvt <kp> <kd> <position_deg> <speed_rad_s> <torque_nm>\n"
-         << "  position <position_deg> <max_speed_rad_s> <max_current_a>\n"
-         << "  speed <speed_rad_s> <max_current_a>\n"
-         << "  current <current_a>\n"
-         << "  torque <torque_nm>\n"
-         << "  brake engage|release (mechanical brake, one-shot)\n"
-         << "  stop full\n"
-         << "  stop dynamic <max_current_a>\n"
-         << "  stop regenerative <max_current_a>\n"
-         << "\n"
-         << "Target:\n"
-         << "  AdapterType:AdapterId:ALL\n"
-         << "  AdapterType:AdapterId:BusId:ALL\n"
-         << "  AdapterType:AdapterId:BusId:MotorId\n"
-         << "  AdapterType:AdapterId:SlaveId:BusId:ALL\n"
-         << "  AdapterType:AdapterId:SlaveId:BusId:MotorId\n"
-         << "\n"
-         << "Output:\n"
-         << "  Mechanical brake executes once and reports acknowledgement per motor.\n"
-         << "  Other modes: feedback is printed as a fixed-width table every 0.5s.\n"
-         << "  The table header is repeated every 10 feedback rows.\n"
-         << "  Press q or Ctrl-C to exit.\n"
-         << "\n"
-         << "Control examples:\n"
-         << "  emcli control pvt Ethercat:eth0:3:0:1 20 1 45 10 0.5\n"
-         << "  emcli control position Ethercat:eth0:3:0:1 90 20 3\n"
-         << "  emcli control current Ethercat:eth0:0:ALL 1.5\n"
-         << "  emcli control speed Ethercat:eth0:3:0:1 15 2\n"
-         << "  emcli control current Ethercat:eth0:3:0:1 1.5\n"
-         << "  emcli control torque Ethercat:eth0:3:0:1 0.8\n"
-         << "  emcli control stop Ethercat:eth0:3:0:1 full\n"
-         << "  emcli control stop Ethercat:eth0:3:0:1 dynamic 2\n"
-         << "  emcli control stop Ethercat:eth0:3:0:1 regenerative 2\n";
-  return output.str();
-}
-
-std::string BuildControlModeHelp(const std::string& mode) {
-  std::ostringstream output;
-  output << "Usage:\n";
-  if (mode == "pvt") {
-    output << "  emcli control [--canfd] pvt <target> <kp> <kd> <position_deg> <speed_rad_s> <torque_nm>\n";
-  } else if (mode == "position") {
-    output << "  emcli control [--canfd] position <target> <position_deg> <max_speed_rad_s> <max_current_a>\n";
-  } else if (mode == "speed") {
-    output << "  emcli control [--canfd] speed <target> <speed_rad_s> <max_current_a>\n";
-  } else if (mode == "current") {
-    output << "  emcli control [--canfd] current <target> <current_a>\n";
-  } else if (mode == "torque") {
-    output << "  emcli control [--canfd] torque <target> <torque_nm>\n";
-  } else if (mode == "brake") {
-    output << "  emcli control [--canfd] brake <target> engage|release\n"
-           << "\nMechanical brake: engage holds, release unlocks. Executes once and reports acknowledgement.\n";
-    return output.str();
-  } else if (mode == "stop") {
-    output << "  emcli control [--canfd] stop <target> full\n"
-           << "  emcli control [--canfd] stop <target> dynamic <max_current_a>\n"
-           << "  emcli control [--canfd] stop <target> regenerative <max_current_a>\n";
-  } else {
-    return BuildControlHelp();
-  }
-  output << "\n"
-         << "Target:\n"
-         << "  AdapterType:AdapterId:ALL\n"
-         << "  AdapterType:AdapterId:BusId:ALL\n"
-         << "  AdapterType:AdapterId:BusId:MotorId\n"
-         << "  AdapterType:AdapterId:SlaveId:BusId:ALL\n"
-         << "  AdapterType:AdapterId:SlaveId:BusId:MotorId\n"
-         << "\n"
-         << "Output:\n"
-         << "  Feedback is printed every 0.5s. Press q or Ctrl-C to exit.\n";
-  return output.str();
-}
-
-std::string BuildImuHelp() {
-  std::ostringstream output;
-  output << "Usage:\n"
-         << "  emcli imu show <target>\n"
-         << "\n"
-         << "Target:\n"
-         << "  AdapterType:AdapterId:BusId:ImuIdx\n"
-         << "  AdapterType:AdapterId:SlaveId:BusId:ImuIdx\n"
-         << "\n"
-         << "Output:\n"
-         << "  Refresh IMU status in place at 50 Hz.\n"
-         << "  Fixed rows: accel, gyro, euler.\n"
-         << "  Missing groups leave value columns blank.\n"
-         << "\n"
-         << "Examples:\n"
-         << "  emcli imu show Ethercat:eth0:0:0\n"
-         << "  emcli imu show Ethercat:eth0:3:0:1\n";
-  return output.str();
-}
-
-std::string BuildBatteryHelp() {
-  std::ostringstream output;
-  output << "Usage:\n"
-         << "  emcli battery show <target>\n"
-         << "  emcli battery clear <target>\n"
-         << "\n"
-         << "Target:\n"
-         << "  AdapterType:AdapterId:BusId:BatteryIdx\n"
-         << "  AdapterType:AdapterId:SlaveId:BusId:BatteryIdx\n"
-         << "\n"
-         << "Output:\n"
-         << "  Show refreshes battery status in place at 50 Hz.\n"
-         << "  Each active error is printed as its own error line.\n"
-         << "\n"
-         << "Examples:\n"
-         << "  emcli battery show Ethercat:eth0:0:0\n"
-         << "  emcli battery clear Ethercat:eth0:3:0:1\n";
-  return output.str();
-}
-
-std::string BuildPmsHelp() {
-  std::ostringstream output;
-  output << "Usage:\n"
-         << "  emcli pms show <target>\n"
-         << "  emcli pms enable <target> V48_1 ...\n"
-         << "  emcli pms disable <target> V48_1 ...\n"
-         << "\n"
-         << "Target:\n"
-         << "  AdapterType:AdapterId:BusId\n"
-         << "  AdapterType:AdapterId:SlaveId:BusId\n"
-         << "\n"
-         << "Channels:\n"
-         << "  Controls: V48_1 V48_2 V48_3 V48_4 V48_5 V48_6\n"
-         << "  Status: V48_1 ... V48_6, V19, V5\n"
-         << "\n"
-         << "Output:\n"
-         << "  Show refreshes PMS status in place at 50 Hz. Press q or Ctrl-C to exit.\n";
-  return output.str();
-}
-
-std::string BuildGloveHelp() {
-  std::ostringstream output;
-  output << "Usage:\n"
-         << "  emcli glove show <target>\n"
-         << "  emcli glove calibrate <target> all\n"
-         << "  emcli glove calibrate <target> <finger_idx> <encoder_idx>\n"
-         << "  emcli glove calibrate <target> <finger_idx> mask <encoder_mask>\n"
-         << "\n"
-         << "Target:\n"
-         << "  AdapterType:AdapterId:SlaveId\n"
-         << "\n"
-         << "Calibration:\n"
-         << "  all                        Calibrate all 50 encoders\n"
-         << "  <finger_idx> <encoder_idx> Calibrate one encoder (finger 0-4, encoder 0-9)\n"
-         << "  <finger_idx> mask <mask>   Calibrate encoders selected by a 10-bit mask\n"
-         << "\n"
-         << "Output:\n"
-         << "  Show refreshes glove encoder status in place at 50 Hz.\n"
-         << "  Rows are encoders E0-E9, columns are fingers F0-F4.\n"
-         << "  Encoders without valid data are shown as OFF.\n"
-         << "  Calibrate is synchronous; the driver waits up to 5 ms per finger.\n"
-         << "  Calibrate fails with exit code 1 on error or timeout.\n"
-         << "  Press q or Ctrl-C to exit show.\n"
-         << "\n"
-         << "Examples:\n"
-         << "  emcli glove show Ethercat:eth0:3\n"
-         << "  emcli glove calibrate Ethercat:eth0:3 all\n"
-         << "  emcli glove calibrate Ethercat:eth0:3 1 5\n"
-         << "  emcli glove calibrate Ethercat:eth0:3 2 mask 0x03F\n";
-  return output.str();
 }
 
 std::string FormatScanHeader() { return "slave\tbus\tid\teff\tcanfd"; }

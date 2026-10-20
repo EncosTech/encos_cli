@@ -1,9 +1,5 @@
 // SPDX-License-Identifier: MIT
 
-#include <sys/select.h>
-#include <termios.h>
-#include <unistd.h>
-
 #include <argparse/argparse.hpp>
 #include <atomic>
 #include <cmath>
@@ -26,6 +22,13 @@
 #include <utility>
 #include <vector>
 
+#if defined(_WIN32)
+// clang-format off
+#include <windows.h>
+#include <shellapi.h>
+// clang-format on
+#endif
+
 #include "cli_command.h"
 #include "components/app_state.h"
 #include "components/control_panel.h"
@@ -36,16 +39,18 @@
 #include "ftxui/component/component.hpp"
 #include "ftxui/component/screen_interactive.hpp"
 #include "ftxui/dom/elements.hpp"
+#include "src/cli/adapter_cli_utils.h"
 #include "src/cli/battery.h"
 #include "src/cli/bench.h"
 #include "src/cli/glove.h"
+#include "src/cli/help_text.h"
 #include "src/cli/imu.h"
 #include "src/cli/interface_name.h"
+#include "src/cli/platform_compat.h"
 #include "src/cli/play.h"
 #include "src/cli/pms.h"
 #include "src/cli/slave_config.h"
 #include "src/cli/stress.h"
-#include "src/cli/zero.h"
 #include "src/driver_version.h"
 
 #ifndef EMCLI_VERSION
@@ -72,38 +77,6 @@ struct ResolvedMotorTarget {
   encos::Motor* motor{nullptr};
 };
 
-class TerminalRawMode {
-public:
-  TerminalRawMode() {
-    if (!isatty(STDIN_FILENO)) {
-      return;
-    }
-    if (tcgetattr(STDIN_FILENO, &original_) != 0) {
-      return;
-    }
-    termios raw = original_;
-    raw.c_lflag = static_cast<tcflag_t>(raw.c_lflag & ~(ICANON | ECHO));
-    raw.c_cc[VMIN] = 0;
-    raw.c_cc[VTIME] = 0;
-    if (tcsetattr(STDIN_FILENO, TCSANOW, &raw) == 0) {
-      active_ = true;
-    }
-  }
-
-  ~TerminalRawMode() {
-    if (active_) {
-      tcsetattr(STDIN_FILENO, TCSANOW, &original_);
-    }
-  }
-
-  TerminalRawMode(const TerminalRawMode&) = delete;
-  TerminalRawMode& operator=(const TerminalRawMode&) = delete;
-
-private:
-  termios original_{};
-  bool active_{false};
-};
-
 void HandleSignal(int) { g_stop_requested.store(true); }
 
 class SignalGuard {
@@ -118,26 +91,6 @@ private:
   int signal_;
   void (*previous_handler_)(int);
 };
-
-bool QuitKeyPressed() {
-  if (!isatty(STDIN_FILENO)) {
-    return false;
-  }
-
-  fd_set read_fds;
-  FD_ZERO(&read_fds);
-  FD_SET(STDIN_FILENO, &read_fds);
-  timeval timeout{0, 0};
-  if (select(STDIN_FILENO + 1, &read_fds, nullptr, nullptr, &timeout) <= 0) {
-    return false;
-  }
-
-  char input = '\0';
-  if (read(STDIN_FILENO, &input, 1) != 1) {
-    return false;
-  }
-  return input == 'q' || input == 'Q';
-}
 
 std::pair<std::string, std::string> ParseAdapterArg(const std::string& value) {
   const std::size_t separator = value.find(':');
@@ -198,10 +151,11 @@ std::vector<AdapterSpec> ResolveAdapterSpecs(const std::vector<std::string>& raw
   return resolved_specs;
 }
 
-void PreloadAdapters(const std::vector<AdapterSpec>& adapter_specs, AppState& app_state) {
+void PreloadAdapters(const std::vector<AdapterSpec>& adapter_specs, AppState& app_state,
+                     const AdapterTimingOptions& timing) {
   for (const AdapterSpec& spec : adapter_specs) {
     encos::BaseAdapterPtr adapter =
-        encos::MakeAdapter(spec.type, spec.id, GetLoggerName(spec.type, spec.id), encos::LogLevel::Off);
+        MakeAdapterWithTiming(spec.type, spec.id, GetLoggerName(spec.type, spec.id), encos::LogLevel::Off, timing);
     if (!adapter) {
       throw std::runtime_error("Failed to create adapter: '" + spec.type + ":" + spec.id + "'");
     }
@@ -217,120 +171,6 @@ bool ContainsHelpRequest(int argc, char** argv) {
     }
   }
   return false;
-}
-
-std::string BuildBenchHelp() {
-  argparse::ArgumentParser parser("bench");
-  ConfigureBenchCommand(parser);
-  return parser.help().str();
-}
-
-std::string BuildStressHelp() {
-  argparse::ArgumentParser parser("stress");
-  ConfigureStressCommand(parser);
-  return parser.help().str();
-}
-
-std::string BuildZeroHelp() {
-  argparse::ArgumentParser parser("emcli zero");
-  ConfigureZeroCommand(parser);
-  return parser.help().str();
-}
-
-std::string BuildPlayHelp() {
-  argparse::ArgumentParser parser("emcli play");
-  ConfigurePlayCommand(parser);
-  return parser.help().str();
-}
-
-std::string BuildHelpForCommand(const std::string& command) {
-  if (command == "tui") {
-    return BuildTuiHelp();
-  }
-  if (command == "scan") {
-    return BuildScanHelp();
-  }
-  if (command == "config") {
-    return BuildConfigHelp();
-  }
-  if (command == "control") {
-    return BuildControlHelp();
-  }
-  if (command == "imu") {
-    return BuildImuHelp();
-  }
-  if (command == "battery") {
-    return BuildBatteryHelp();
-  }
-  if (command == "pms") {
-    return BuildPmsHelp();
-  }
-  if (command == "glove") {
-    return BuildGloveHelp();
-  }
-  if (command == "bench") {
-    return BuildBenchHelp();
-  }
-  if (command == "stress") {
-    return BuildStressHelp();
-  }
-  if (command == "zero") {
-    return BuildZeroHelp();
-  }
-  if (command == "play") {
-    return BuildPlayHelp();
-  }
-  return BuildTopLevelHelp();
-}
-
-bool IsConfigItemName(const std::string& value) {
-  static const std::unordered_set<std::string> items = {"id",
-                                                        "position",
-                                                        "calibrate",
-                                                        "kt",
-                                                        "pvt-kp-range",
-                                                        "pvt-kd-range",
-                                                        "pvt-pos-range",
-                                                        "pvt-spd-range",
-                                                        "pvt-tor-range",
-                                                        "pvt-cur-range",
-                                                        "cur-pi",
-                                                        "spd-pi",
-                                                        "pos-pd",
-                                                        "can-timeout",
-                                                        "comm"};
-  return items.find(value) != items.end();
-}
-
-bool IsControlModeName(const std::string& value) {
-  static const std::unordered_set<std::string> modes = {"pvt",    "position", "speed", "current",
-                                                        "torque", "stop",     "brake"};
-  return modes.find(value) != modes.end();
-}
-
-std::string BuildHelpForArgs(int argc, char** argv) {
-  if (argc < 2) {
-    return BuildTopLevelHelp();
-  }
-
-  const std::string command = argv[1];
-  if (command == "config") {
-    for (int index = 2; index < argc; ++index) {
-      const std::string argument = argv[index];
-      if (IsConfigItemName(argument)) {
-        return BuildConfigItemHelp(argument);
-      }
-    }
-  }
-  if (command == "control") {
-    for (int index = 2; index < argc; ++index) {
-      const std::string argument = argv[index];
-      if (IsControlModeName(argument)) {
-        return BuildControlModeHelp(argument);
-      }
-    }
-  }
-  return BuildHelpForCommand(command);
 }
 
 std::string FormatCliFloat(float value) {
@@ -374,15 +214,24 @@ std::string FormatMotorError(encos::MotorError error) {
       return "DriverError";
     case encos::MotorError::OverTemperatureWarning:
       return "OverTemperatureWarning";
+    case encos::MotorError::OutputEncoderError:
+      return "OutputEncoderError";
+    case encos::MotorError::FetOverTemperature:
+      return "FetOverTemperature";
+    case encos::MotorError::OverSpeed:
+      return "OverSpeed";
+    case encos::MotorError::TemperatureWarning:
+      return "TemperatureWarning";
     case encos::MotorError::NoResponse:
       return "NoResponse";
   }
   return std::to_string(static_cast<int>(error));
 }
 
-encos::BaseAdapterPtr OpenTargetAdapter(const std::string& adapter_type, const std::string& adapter_id) {
-  encos::BaseAdapterPtr adapter =
-      encos::MakeAdapter(adapter_type, adapter_id, GetLoggerName(adapter_type, adapter_id), encos::LogLevel::Warn);
+encos::BaseAdapterPtr OpenTargetAdapter(const std::string& adapter_type, const std::string& adapter_id,
+                                        const AdapterTimingOptions& timing) {
+  encos::BaseAdapterPtr adapter = MakeAdapterWithTiming(
+      adapter_type, adapter_id, GetLoggerName(adapter_type, adapter_id), encos::LogLevel::Warn, timing);
   if (!adapter) {
     throw std::runtime_error("Failed to create adapter: '" + adapter_type + ":" + adapter_id + "'");
   }
@@ -423,8 +272,8 @@ std::string FormatTargetPrefix(const ResolvedMotorTarget& target, const MotorTar
   return FormatTargetPrefix(target.slave_id, target.bus_id, target.motor_id, request.adapter_type, request.adapter_id);
 }
 
-std::vector<ResolvedMotorTarget> ResolveMotorTargets(const MotorTarget& target) {
-  encos::BaseAdapterPtr adapter = OpenTargetAdapter(target.adapter_type, target.adapter_id);
+std::vector<ResolvedMotorTarget> ResolveMotorTargets(const MotorTarget& target, const AdapterTimingOptions& timing) {
+  encos::BaseAdapterPtr adapter = OpenTargetAdapter(target.adapter_type, target.adapter_id, timing);
   std::vector<ResolvedMotorTarget> resolved;
 
   auto append_scanned_bus = [&](std::optional<int32_t> slave_id, int32_t bus_id, encos::Bus* bus) {
@@ -497,8 +346,8 @@ void EnsureMotorInitialized(ResolvedMotorTarget& target) {
   }
 }
 
-encos::BaseAdapterPtr OpenScanAdapter(const ScanTarget& target) {
-  return OpenTargetAdapter(target.adapter_type, target.adapter_id);
+encos::BaseAdapterPtr OpenScanAdapter(const ScanTarget& target, const AdapterTimingOptions& timing) {
+  return OpenTargetAdapter(target.adapter_type, target.adapter_id, timing);
 }
 
 void PrintAvailableInterfaces(const std::string& adapter_type) {
@@ -572,11 +421,17 @@ std::string GetConfigValue(encos::Motor& motor, ConfigItem item) {
       output << "pos-pd " << FormatCliFloat(values.kp) << ' ' << FormatCliFloat(values.kd);
       break;
     }
+    case ConfigItem::Brake: {
+      const auto state = motor.GetParameter<encos::MotorParameter::BrakeStatus>();
+      if (state > 1) {
+        throw std::runtime_error("Unknown mechanical brake state: " + std::to_string(state));
+      }
+      output << "brake " << (state == 0 ? "engage" : "release");
+      break;
+    }
     case ConfigItem::CanTimeout:
       output << "can-timeout " << motor.GetParameter<encos::MotorParameter::CanTimeout>();
       break;
-    case ConfigItem::Calibrate:
-      throw std::runtime_error("Config item 'calibrate' is not readable");
     case ConfigItem::CommunicationMode:
       throw std::runtime_error("Config item 'comm' is not readable");
   }
@@ -601,7 +456,7 @@ std::vector<ScanMotorRow> ScanBusAndFormatRows(std::optional<int32_t> slave_id, 
 void PrintConfigValue(encos::Motor& motor, ConfigItem item) { std::cout << GetConfigValue(motor, item) << '\n'; }
 
 bool IsConfigReadbackItem(ConfigItem item) {
-  return item != ConfigItem::Id && item != ConfigItem::Calibrate && item != ConfigItem::CommunicationMode;
+  return item != ConfigItem::Id && item != ConfigItem::CommunicationMode && item != ConfigItem::Brake;
 }
 
 bool SetConfigValue(encos::Motor& motor, const CliCommand& command) {
@@ -609,17 +464,8 @@ bool SetConfigValue(encos::Motor& motor, const CliCommand& command) {
   switch (command.item) {
     case ConfigItem::Id:
       return motor.SetId(ParseUint16(values[0], "NewId"), true);
-    case ConfigItem::Calibrate: {
-      const float min_radians = ParseFloat(values[0], "Min") * kDegreesToRadians;
-      const float max_radians = ParseFloat(values[1], "Max") * kDegreesToRadians;
-      const float speed = ParseFloat(values[2], "Speed");
-      const float current = ParseFloat(values[3], "Current");
-      const int direction = speed >= 0.0F ? 1 : -1;
-      encos::Range<float> limit{min_radians, max_radians};
-      return motor.Calibrate(limit, direction, speed, current);
-    }
     case ConfigItem::Kt:
-      return motor.SetKt(ParseFloat(values[0], "Kt"), true);
+      throw std::runtime_error("Config item 'kt' is read-only: the new protocol removed the Kt write command");
     case ConfigItem::PvtKpRange: {
       encos::Range<uint16_t> range{ParseUint16(values[0], "Min"), ParseUint16(values[1], "Max")};
       return motor.SetPVTKpRange(range, true);
@@ -650,6 +496,8 @@ bool SetConfigValue(encos::Motor& motor, const CliCommand& command) {
       return motor.SetSpdPI(ParseFloat(values[0], "Kp"), ParseFloat(values[1], "Ki"), true);
     case ConfigItem::PositionPd:
       return motor.SetPosPD(ParseFloat(values[0], "Kp"), ParseFloat(values[1], "Kd"), true);
+    case ConfigItem::Brake:
+      return motor.Brake(values[0] == "engage");
     case ConfigItem::CanTimeout:
       return motor.SetCanTimeout(ParseUint16(values[0], "Timeout"), true);
     case ConfigItem::Position:
@@ -750,8 +598,12 @@ int RunCli(int argc, char** argv) {
     arguments.emplace_back(argv[index]);
   }
 
+  // 位时序选项先剥离：从站配置模式（纯 udp/usb 配置）不创建适配器，需要它被移除以正常识别；
+  // 该模式下选项被静默忽略。
+  AdapterTimingOptions timing;
   CliCommand command;
   try {
+    timing = StripAdapterTimingFlags(arguments);
     if (auto status = RunSlaveConfig(arguments)) return *status;
     command = ParseCliCommand(arguments);
   } catch (const std::exception& error) {
@@ -761,7 +613,7 @@ int RunCli(int argc, char** argv) {
   }
 
   try {
-    std::vector<ResolvedMotorTarget> targets = ResolveMotorTargets(command.target);
+    std::vector<ResolvedMotorTarget> targets = ResolveMotorTargets(command.target, timing);
     bool had_failure = false;
     for (ResolvedMotorTarget& target : targets) {
       try {
@@ -820,7 +672,10 @@ int RunScan(int argc, char** argv) {
     arguments.emplace_back(argv[index]);
   }
 
+  // 纯接口枚举（scan <Type>）与纯 UDP 发现（scan --slave）不创建适配器，此处剥离后静默忽略
+  AdapterTimingOptions timing;
   try {
+    timing = StripAdapterTimingFlags(arguments);
     const bool slaves = std::find(arguments.begin(), arguments.end(), "--slave") != arguments.end();
     arguments.erase(std::remove(arguments.begin(), arguments.end(), "--slave"), arguments.end());
     const ScanCommand command = ParseScanCommand(arguments);
@@ -834,7 +689,7 @@ int RunScan(int argc, char** argv) {
       if (target.adapter_type == "Ethernet")
         rows = ScanEthernetSlaves(target.adapter_id);
       else {
-        auto adapter = OpenScanAdapter(target);
+        auto adapter = OpenScanAdapter(target, timing);
         std::set<unsigned> indices;
         for (const auto& bus : adapter->GetBuses()) indices.insert(static_cast<unsigned>(bus.first) >> 16);
         for (auto index : indices) rows.push_back({index, {}});
@@ -847,7 +702,7 @@ int RunScan(int argc, char** argv) {
       return 0;
     }
 
-    encos::BaseAdapterPtr adapter = OpenScanAdapter(target);
+    encos::BaseAdapterPtr adapter = OpenScanAdapter(target, timing);
 
     if (target.bus_id.has_value()) {
       encos::Bus* bus = target.slave_id.has_value() ? adapter->GetBus(*target.slave_id, *target.bus_id)
@@ -896,8 +751,10 @@ int RunControl(int argc, char** argv) {
     arguments.emplace_back(argv[index]);
   }
 
+  AdapterTimingOptions timing;
   ControlCommand command;
   try {
+    timing = StripAdapterTimingFlags(arguments);
     command = ParseControlCommand(arguments);
   } catch (const std::exception& error) {
     std::cerr << "Error: " << error.what() << '\n';
@@ -906,7 +763,7 @@ int RunControl(int argc, char** argv) {
   }
 
   try {
-    std::vector<ResolvedMotorTarget> targets = ResolveMotorTargets(command.target);
+    std::vector<ResolvedMotorTarget> targets = ResolveMotorTargets(command.target, timing);
     if (command.item == ControlItem::Brake) {
       bool had_failure = false;
       for (ResolvedMotorTarget& target : targets) {
@@ -948,13 +805,13 @@ int RunControl(int argc, char** argv) {
 
     g_stop_requested.store(false);
     SignalGuard sigint_guard(SIGINT);
-    TerminalRawMode terminal_raw_mode;
+    platform::TerminalRawMode terminal_raw_mode;
 
     using namespace std::chrono_literals;
     auto last_print = std::chrono::steady_clock::now();
     std::size_t printed_feedback_rows = 0;
     while (!g_stop_requested.load()) {
-      if (QuitKeyPressed()) {
+      if (platform::QuitKeyPressed()) {
         break;
       }
 
@@ -1000,10 +857,10 @@ int RunControl(int argc, char** argv) {
   }
 }
 
-int RunTui(const std::vector<std::string>& adapter_args) {
+int RunTui(std::vector<std::string> adapter_args, const AdapterTimingOptions& timing) {
   AppState app_state;
   const std::vector<AdapterSpec> adapter_specs = ResolveAdapterSpecs(adapter_args);
-  PreloadAdapters(adapter_specs, app_state);
+  PreloadAdapters(adapter_specs, app_state, timing);
 
   ControlRuntime control_runtime(app_state);
   GraphRuntime graph_runtime(app_state);
@@ -1088,7 +945,7 @@ int Run(int argc, char** argv) {
   }
 
   if (argc == 1) {
-    return RunTui({});
+    return RunTui({}, {});
   }
 
   argparse::ArgumentParser program("emcli");
@@ -1103,14 +960,18 @@ int Run(int argc, char** argv) {
   argparse::ArgumentParser bench_command("bench");
   argparse::ArgumentParser stress_command("stress");
   argparse::ArgumentParser play_command("play");
-  argparse::ArgumentParser zero_command("zero");
 
   tui_command.add_argument("adapters").help("Adapter preload list: AdapterType:AdapterId").remaining();
   scan_command.add_argument("--slave").default_value(false).implicit_value(true).help("Scan slaves and UUIDs");
   scan_command.add_argument("args").help("Scan command: <AdapterType[:AdapterId[:BusId]]>").remaining();
+  config_command.add_argument("--canfd").default_value(false).implicit_value(true).help(
+      "Send motor commands with CAN FD frames");
+  // control 的帮助同样声明 [--canfd]，这里补上声明，使"选项在目标之前"的写法不被 argparse 拒绝
+  control_command.add_argument("--canfd").default_value(false).implicit_value(true).help(
+      "Send motor commands with CAN FD frames");
   config_command.add_argument("args").help("Config command: <target> <item> [set <values>]").remaining();
   control_command.add_argument("args").help("Control command: <mode> <target> <values>").remaining();
-  imu_command.add_argument("args").help("IMU command: show <target>").remaining();
+  imu_command.add_argument("args").help("IMU command: show <target> or <target> <start|stop>").remaining();
   battery_command.add_argument("args").help("Battery command: <show|clear> <target>").remaining();
   pms_command.add_argument("args").help("PMS command: <show|enable|disable> <target> [V48_1 ...]").remaining();
   glove_command.add_argument("args")
@@ -1118,6 +979,17 @@ int Run(int argc, char** argv) {
           "Glove command: show <target> | calibrate <target> all | calibrate <target> <finger_idx> <encoder_idx> | "
           "calibrate <target> <finger_idx> mask <encoder_mask>")
       .remaining();
+  // B 族命令的选项由各 RunX 从原始 argv 手工剥离；这里声明是为了让"选项在目标之前"的写法
+  // 不被 argparse 拒绝（与既有 --slave 的做法一致）。tui 的 adapters 由 argparse 取值，
+  // 两种位置分别由 argparse 与剥离各掌握一半，见 tui 分发处。
+  AddAdapterTimingArguments(tui_command);
+  AddAdapterTimingArguments(scan_command);
+  AddAdapterTimingArguments(config_command);
+  AddAdapterTimingArguments(control_command);
+  AddAdapterTimingArguments(imu_command);
+  AddAdapterTimingArguments(battery_command);
+  AddAdapterTimingArguments(pms_command);
+  AddAdapterTimingArguments(glove_command);
   program.add_subparser(tui_command);
   program.add_subparser(scan_command);
   program.add_subparser(config_command);
@@ -1129,12 +1001,10 @@ int Run(int argc, char** argv) {
   program.add_subparser(bench_command);
   program.add_subparser(stress_command);
   program.add_subparser(play_command);
-  program.add_subparser(zero_command);
 
   ConfigureBenchCommand(bench_command);
   ConfigureStressCommand(stress_command);
   ConfigurePlayCommand(play_command);
-  ConfigureZeroCommand(zero_command);
 
   if (argc == 2 && (std::string(argv[1]) == "-h" || std::string(argv[1]) == "--help")) {
     std::cout << BuildTopLevelHelp();
@@ -1164,10 +1034,6 @@ int Run(int argc, char** argv) {
           std::cout << stress_command;
           return 0;
         }
-        if (command == "zero") {
-          std::cout << BuildZeroHelp();
-          return 0;
-        }
         if (command == "play") {
           std::cout << BuildPlayHelp();
           return 0;
@@ -1189,10 +1055,6 @@ int Run(int argc, char** argv) {
         std::cerr << stress_command;
         return 1;
       }
-      if (command == "zero") {
-        std::cerr << BuildZeroHelp();
-        return 1;
-      }
       if (command == "play") {
         std::cerr << BuildPlayHelp();
         return 1;
@@ -1205,8 +1067,11 @@ int Run(int argc, char** argv) {
   }
 
   if (program.is_subcommand_used(tui_command)) {
-    const std::vector<std::string> adapter_args = tui_command.get<std::vector<std::string>>("adapters");
-    return RunTui(adapter_args);
+    std::vector<std::string> adapter_args = tui_command.get<std::vector<std::string>>("adapters");
+    // 前置写法由 argparse 收走，尾置写法被 remaining() 吞进 adapters：两个来源互补
+    AdapterTimingOptions timing = ReadAdapterTimingOptions(tui_command);
+    timing.FillMissingFrom(StripAdapterTimingFlags(adapter_args));
+    return RunTui(std::move(adapter_args), timing);
   }
 
   if (program.is_subcommand_used(scan_command)) {
@@ -1255,10 +1120,6 @@ int Run(int argc, char** argv) {
     return RunPlayCommand(play_command);
   }
 
-  if (program.is_subcommand_used(zero_command)) {
-    return RunZeroCommand(zero_command);
-  }
-
   std::cerr << "Error: command required\n";
   std::cerr << BuildTopLevelHelp();
   return 1;
@@ -1267,7 +1128,54 @@ int Run(int argc, char** argv) {
 }  // namespace
 }  // namespace motor_cli
 
+#if defined(_WIN32)
+namespace {
+
+std::string WideToUtf8Arg(const wchar_t* value) {
+  if (value == nullptr) {
+    return {};
+  }
+  const int size = WideCharToMultiByte(CP_UTF8, 0, value, -1, nullptr, 0, nullptr, nullptr);
+  if (size <= 0) {
+    return {};
+  }
+  std::string result(static_cast<std::size_t>(size), '\0');
+  WideCharToMultiByte(CP_UTF8, 0, value, -1, result.data(), size, nullptr, nullptr);
+  result.pop_back();
+  return result;
+}
+
+// MSVC 的 argv 使用 ANSI 代码页，无法表示中文网卡名等；改用宽命令行转 UTF-8。
+void ConvertArgsToUtf8(int& argc, char**& argv, std::vector<std::string>& storage, std::vector<char*>& pointers) {
+  int wide_argc = 0;
+  wchar_t** wide_argv = CommandLineToArgvW(GetCommandLineW(), &wide_argc);
+  if (wide_argv == nullptr) {
+    return;
+  }
+  storage.clear();
+  pointers.clear();
+  storage.reserve(static_cast<std::size_t>(wide_argc));
+  pointers.reserve(static_cast<std::size_t>(wide_argc));
+  for (int index = 0; index < wide_argc; ++index) {
+    storage.push_back(WideToUtf8Arg(wide_argv[index]));
+  }
+  LocalFree(wide_argv);
+  for (auto& value : storage) {
+    pointers.push_back(value.data());
+  }
+  argc = wide_argc;
+  argv = pointers.data();
+}
+
+}  // namespace
+#endif
+
 int main(int argc, char** argv) {
+#if defined(_WIN32)
+  std::vector<std::string> utf8_arg_storage;
+  std::vector<char*> utf8_arg_pointers;
+  ConvertArgsToUtf8(argc, argv, utf8_arg_storage, utf8_arg_pointers);
+#endif
   try {
     return motor_cli::Run(argc, argv);
   } catch (const std::exception& error) {

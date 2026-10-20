@@ -7,7 +7,7 @@ binary=sys.argv[1]
 def run(item, value, replies, expected, success):
     master, slave=pty.openpty()
     device=os.ttyname(slave)
-    process=subprocess.Popen([binary,'config','Ethercat:'+device,item,'set',value],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+    process=subprocess.Popen([binary,'config','Ethercat:'+device,item,*(['set',value] if value is not None else [])],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
     seen=[];pending=b'';end=time.monotonic()+5
     while process.poll() is None and time.monotonic()<end:
         if not select.select([master],[],[],.05)[0]:continue
@@ -22,8 +22,12 @@ def run(item, value, replies, expected, success):
         os.close(master);os.close(slave)
     assert seen==expected,(seen,out,err)
     assert (process.returncode==0)==success,(out,err)
+    if item == 'version' and success: assert out.strip() == 'OK VERSION=12.34.56', (out,err)
 run('mode','ecat',['OK STAGED','OK SAVED','OK REBOOT'],['MODE SET ECAT','CONFIG SAVE','REBOOT'],True)
 run('ip','192.168.100.11',['OK STAGED','ERR BUSY'],['NET SETIP 192.168.100.11','CONFIG SAVE'],False)
-for mode in ('usb3can','usb8can'):
+for mode in ('usb3can','usb8can','sim','simsensors'):
     run('mode',mode,['OK STAGED','OK SAVED','OK REBOOT'],['MODE SET '+mode.upper(),'CONFIG SAVE','REBOOT'],True)
 print('CDC workflow: save then reboot; save failure prevents reboot')
+
+run('version',None,['OK VERSION=12.34.56'],['VERSION GET'],True)
+run('version',None,['ERR UNKNOWN_COMMAND; HELP'],['VERSION GET'],False)

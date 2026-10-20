@@ -71,6 +71,35 @@ AdapterType:AdapterId:SlaveId:BusId:ALL
 AdapterType:AdapterId:SlaveId:BusId:MotorId
 ```
 
+CAN 位时序选项（可选，附加在各命令的目标/链路参数上）：
+
+```bash
+# 仲裁段波特率与采样点
+./build/emcli scan Can:can0 --bitrate 500000 --sample-point 0.875
+./build/emcli config --bitrate 500000 Can:can0:0:1 kt
+
+# CAN FD 数据段波特率与采样点
+./build/emcli bench Can:can0 --bitrate 1000000 --dbitrate 2000000 --dsample-point 0.8
+```
+
+- 4 个选项：`--bitrate`（仲裁段波特率，bit/s）、`--sample-point`（仲裁段采样点，0–1 小数）、
+  `--dbitrate`（CAN FD 数据段波特率）、`--dsample-point`（数据段采样点）。目标/链路参数仍需照常给出，
+  选项不能替代它们。
+- 选项写在目标之前或之后等价；`--bitrate=500000` 与 `--bitrate 500000` 也等价。
+- 对本次命令打开的**每个**适配器生效（适配器侧把它们作为总线公共参数）。
+- **不给任何选项时各适配器使用自己的插件默认值**，行为与旧版本一致：本 CLI 不替你填默认值，
+  因为各适配器默认值不同（`Can` 的采样点默认 0.765/0.882，`Ethernet` 是 0.75/0.875），
+  填统一默认值会静默覆盖后者。
+- 只有 `Can`、`Slcan`、`Ethernet`、`GsUsb` 适配器会读取这组配置；`Ethercat`、`RelayWs`、
+  `UsbSerial`、`Fake` 会记录一条 warning 后忽略。
+- `Slcan` 是 classic CAN：只支持 S0–S8 对应的位率（10k/20k/50k/100k/125k/250k/500k/800k/1M）；
+  数据段字段（`--dbitrate`、`--dsample-point`）仅在等于标准默认值 5000000/0.882 时被容忍，
+  取其它值会在构造适配器时报错。
+- 同一接口在一个进程内只按**首次**创建时的配置初始化：此前已创建过该接口时，后传入的时序会被忽略
+  并告警。
+- 不创建适配器的子模式（`scan <AdapterType>` 纯枚举接口、`scan --slave` 纯 UDP 发现、
+  `config` 的从站配置子模式）会静默忽略这组选项。
+
 扫描适配器和电机：
 
 ```bash
@@ -105,14 +134,11 @@ slave\tbus\tid\teff\tcanfd
 
 # 写入配置
 ./build/emcli config Ethercat:eth0:0:1 id set 2
-./build/emcli config Ethercat:eth0:3:0:1 kt set 0.120000
 ./build/emcli config Ethercat:eth0:3:0:1 pvt-kp-range set 1 500
 ./build/emcli config Ethercat:eth0:3:0:1 position set 0
 ./build/emcli config Ethercat:eth0:3:0:1 position set 45
 ./build/emcli config Ethercat:eth0:3:0:1 position reset
 ./build/emcli config Ethercat:eth0:3:0:1 comm set canfd
-./build/emcli config Ethercat:eth0:3:0:1 calibrate set -90 90 1 2
-./build/emcli config Ethercat:eth0:3:0:ALL kt set 0.120000
 ```
 
 `config` 对 `ALL` 目标会按匹配到的每台电机逐行输出结果；`id set` 不支持 `ALL` 目标。
@@ -149,24 +175,40 @@ pos-pd, can-timeout
 ./build/emcli control brake Ethercat:eth0:3:0:1 release # 释放
 ```
 
+也可通过 `config` 查询和控制机械抱闸（`barke` 是 `brake` 的兼容别名，支持 `--canfd` 和 `ALL`）：
+
+```bash
+./build/emcli config Ethernet:enx6c1ff7bd2e87:0:4:1 barke         # 查询，输出 brake engage（抱紧）或 brake release（释放）
+./build/emcli config Ethernet:enx6c1ff7bd2e87:0:4:1 brake engage # 抱紧，等待 ACK
+./build/emcli config Ethernet:enx6c1ff7bd2e87:0:4:1 brake release # 释放，等待 ACK
+```
+
+控制成功输出 `success`；查询使用独立的抱闸状态读取指令。
+
 电子刹车 `stop` 调用驱动 `Stop`；机械抱闸 `brake` 调用驱动 `Brake`。原有 `control brake ... full/dynamic/regenerative` 已改为 `control stop ...`，旧写法会报错。
 TUI 分别提供 `Stop (electronic)` 和 `Brake (mechanical)`；后者的 `Engage` / `Release` 按钮单次执行并显示确认或失败结果，不改变当前连续控制模式。
 
-IMU 状态查看：
+IMU 状态查看和启停：
 
 ```bash
 ./build/emcli imu show Ethercat:eth0:0:0
 ./build/emcli imu show Ethercat:eth0:3:0:1
+./build/emcli imu Ethercat:eth0:7 start
+./build/emcli imu Ethercat:eth0:7:0 stop
+./build/emcli imu Ethercat:eth0:3:7:0 start
 ```
 
 IMU 目标格式：
 
 ```text
+AdapterType:AdapterId:BusId                 # 仅 start/stop
 AdapterType:AdapterId:BusId:ImuIdx
 AdapterType:AdapterId:SlaveId:BusId:ImuIdx
 ```
 
 `imu show` 会以 50 Hz 刷新输出，使用擦除后回写方式显示固定表格，包含 `accel`、`gyro`、`euler` 三行。按 `q` 或 `Ctrl-C` 退出。
+
+`imu <target> start/stop` 提交整条总线的 IMU 数据转发启停指令后退出，4/5 段连接串中的 `ImuIdx` 不影响启停范围。总线需预先配置为 1 Mbps 经典 CAN；成功输出仅表示命令已提交，设备没有应用层应答。
 
 电池状态查看和清错：
 
@@ -288,6 +330,41 @@ cpack            # 生成默认配置的包（DEB/TGZ）
 cpack -G DEB
 ```
 
+### USB 一键固件下载
+
+```sh
+# Linux：端口请使用实际的网关 CDC 端口，也支持 /dev/serial/by-id/... 路径
+emcli config Ethernet:/dev/ttyACM1 download demo.bin
+emcli config Ethercat:/dev/ttyACM1 download demo.elf
+emcli config EthercatIGH:/dev/ttyACM1 download "firmware folder/demo.elf"
+
+# Windows：COM10 及以上端口同样支持
+emcli config EthercatIGH:COM5 download "C:\firmware\demo.elf"
+```
+
+`download` 通过 USB 完成网关应用升级，无需 Python、objcopy、手工拖拽文件或调试器。
+`Ethernet`、`Ethercat`、`EthercatIGH` 前缀均使用指定 CDC 串口，不需要对应网络插件，
+也不会切换网关的业务模式。网络接口目标（如 `Ethernet:eth0:0`）不支持此命令。
+
+板卡需预先烧入配套的 A/B OTA bootloader 和支持 `OTA STATUS` / `OTA ENTER` 的应用，
+且应用和 bootloader 必须使用相同的 32 位十六进制 USB UUID。
+当前格式针对 Ethercat_8CAN 网关：设备标识 `0x3843414e`，应用入口 `0x80041000`，
+最大应用大小 `0xbf000` 字节。输入应为 `gateway-ota/output/demo.elf` 或同一 OTA 构建的
+原始 `demo.bin`；普通独立启动固件、bootloader、工厂合并镜像、`app-slot.bin` 和 `.upd`
+不是该命令的输入。ELF 会校验架构、入口和加载段；原始 BIN 不携带链接地址，必须由调用者
+确保它是 OTA 应用产物。SHA-256 用于传输完整性校验，不是固件签名认证。
+
+命令先校验文件并读取当前状态，以当前版本加一打包，再请求重启到虚拟 U 盘，按 USB UUID
+定位同一块板，写入并刷新升级文件，最后重新定位 CDC 端口。
+只有新版本在另一槽位确认启动且 `READY=1` 才返回成功（退出码 0）；回退、拒绝升级或超时
+均返回非零。最多等待 U 盘挂载 40 秒、应用确认 100 秒。传输未完成时旧固件仍由 bootloader
+保留，修复连接后重新执行即可；不要把“文件已写入”当作升级成功。
+
+执行前停止正在使用该板的业务连接，EtherCAT 退出 OP/SAFEOP；繁忙时固件会拒绝进入升级。
+Linux 需要 CDC 读写权限以及 U 盘挂载目录写权限：优先使用桌面自动挂载，未挂载时尝试
+`udisksctl mount --no-user-interaction`（需要 udisks2 和相应用户权限）。Windows 需要系统为
+虚拟 U 盘分配盘符。升级期间端口号可以改变，CLI 会重新发现同一 USB UUID 的串口。
+
 ### 从站配置与扫描
 
 ```sh
@@ -302,6 +379,8 @@ emcli config Ethernet:enx6c1ff7bd2e87:4925c78e2e1d44ecca22ddb104730b57 mode set 
 emcli config EthercatIGH:/dev/ttyACM1 mode set enet
 emcli config Ethernet:/dev/ttyACM1 mode set usb3can
 emcli config Ethernet:/dev/ttyACM1 mode set usb8can
+emcli config Ethernet:/dev/ttyACM1 mode set sim
+emcli config Ethernet:/dev/ttyACM1 mode set simsensors
 emcli config Ethernet:/dev/ttyACM1 ip set 192.168.100.10
 emcli config Ethernet:/dev/ttyACM1 slave set 252
 emcli config Ethernet:enx6c1ff7bd2e87:252 slave set 9
@@ -319,7 +398,9 @@ SlaveId为IP最后一段减1，范围0–252（例如`.10`对应9）；从站IP�
 `192.168.100.<编号+1>`，复用IP配置命令；例如 `slave set 9` 设置为 `.10`。
 `slave get` 返回包含IP和SlaveId的网络配置。目标中的SlaveId是修改前的编号。
 写入后自动保存Flash并立即发出重启命令；
-`enet`对应固件UDP模式，`usb3can`和`usb8can`分别对应固件USB3CAN和USB8CAN模式。
+`enet`（或别名`udp`）对应固件UDP模式，`usb3can`和`usb8can`分别对应固件USB3CAN和USB8CAN模式，
+`sim`和`simsensors`分别对应固件的SIM（八路电机模拟器）和SIMSENSORS（CAN0-5电机模拟器 + CAN6电池 + CAN7 IMU）
+模式。CLI token与固件`MODE SET`的拼写不同，不要混用。
 活动CAN会话下保存/重启会拒绝，关闭适配器后至少等待5秒；
 EtherCAT需先退出OP/SAFEOP。写入失败不会继续重启。返回OK REBOOT代表板卡接受命令，
 不代表已确认重新上线。切到ecat后请通过CDC进行后续配置。
@@ -331,3 +412,18 @@ UDP需支持EMM1文本命令通道的新固件。serialib作为external/serialib
 `scan --slave`要求`插件:网卡`目标，仅支持Ethernet及Ethercat相关插件；其他插件报不支持。
 Ethernet通过广播发现，不创建CAN数据会话；EtherCAT按插件枚举的总线所属从站去重，
 不会额外发送电机扫描请求。表按SlaveIdx升序输出。
+
+### 网关固件版本查询
+
+```sh
+emcli config Ethernet:eth0:9 version
+emcli config Ethernet:eth0:1234567890abcdef1234567890abcdef version get
+emcli config Ethernet:/dev/ttyACM0 version
+emcli config EthercatIGH:/dev/ttyACM0 version
+```
+
+`version` / `version get` 均只发送 `VERSION GET`，返回 `OK VERSION=1.0.0`。
+CDC 使用 LF 行结束；Ethernet 使用 EMM1 COMMAND(12) / COMMAND_REPLY(13)，
+请求正文不带换行，以 NUL 结束。查询不保存配置、不重启，旧固件返回错误时 CLI 以非零退出。
+这里是网关应用固件的版本，与 `emcli --version` 和 OTA 镜像递增编号不同。
+Ethernet 仅在网关 UDP 模式可用；CDC 可用于所有运行模式。

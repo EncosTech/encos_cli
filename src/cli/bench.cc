@@ -5,9 +5,6 @@
 #include <encos/encos_motor.h>
 #include <encos/utils/thread_priority.h>
 #include <nanobench.h>
-#include <pthread.h>
-#include <sched.h>
-#include <sys/mman.h>
 
 #include <argparse/argparse.hpp>
 #include <atomic>
@@ -23,6 +20,7 @@
 
 #include "src/cli/adapter_cli_utils.h"
 #include "src/cli/interface_name.h"
+#include "src/cli/platform_compat.h"
 
 namespace motor_cli {
 
@@ -121,14 +119,11 @@ void ConfigureRealtimeHints() {
               << std::endl;
   }
 
-  cpu_set_t cpuset;
-  CPU_ZERO(&cpuset);
-  CPU_SET(2, &cpuset);
-  if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset) != 0) {
+  if (!motor_cli::platform::SetCurrentThreadAffinity(2)) {
     std::cerr << "Warning: Failed to set CPU affinity. Run as root or with elevated privileges." << std::endl;
   }
 
-  if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) {
+  if (!motor_cli::platform::TryLockMemoryPages()) {
     std::cerr << "Warning: Failed to lock memory pages. Run as root or with elevated privileges." << std::endl;
   }
 }
@@ -305,6 +300,7 @@ BenchContext PrepareScanLevelBench(encos::BaseAdapter& adapter, const BenchTarge
 void ConfigureBenchCommand(argparse::ArgumentParser& parser) {
   parser.add_description("Benchmark a single adapter, bus, or motor");
   AddAdapterArgument(parser);
+  AddAdapterTimingArguments(parser);
   parser.add_argument("--plugin-path").help("Override plugin directory path").metavar("PATH");
   parser.add_argument("--congestion-motor-count")
       .help(
@@ -340,9 +336,9 @@ int RunBenchCommand(const argparse::ArgumentParser& parser) {
   }
   const BenchTarget target = ParseBenchTarget(raw_links[0]);
 
-  encos::BaseAdapterPtr adapter =
-      encos::MakeAdapter(target.adapter_type, target.adapter_id,
-                         motor_cli::GetLoggerName(target.adapter_type, target.adapter_id), encos::LogLevel::Warn);
+  encos::BaseAdapterPtr adapter = MakeAdapterWithTiming(
+      target.adapter_type, target.adapter_id, motor_cli::GetLoggerName(target.adapter_type, target.adapter_id),
+      encos::LogLevel::Warn, ReadAdapterTimingOptions(parser));
   if (!adapter) {
     throw std::runtime_error("Failed to create adapter for link: '" + target.adapter_type + ":" + target.adapter_id +
                              "'");

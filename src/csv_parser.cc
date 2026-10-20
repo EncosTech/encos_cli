@@ -13,16 +13,6 @@ namespace emzero {
 
 namespace {
 
-void Trim(std::string& s) {
-  size_t start = s.find_first_not_of(" \t\r\n");
-  if (start == std::string::npos) {
-    s.clear();
-    return;
-  }
-  size_t end = s.find_last_not_of(" \t\r\n");
-  s = s.substr(start, end - start + 1);
-}
-
 std::vector<std::string> SplitColonSeparated(const std::string& value) {
   std::vector<std::string> parts;
   std::size_t start = 0;
@@ -75,79 +65,6 @@ std::string FormatConnection(const MotorConnection& conn) {
   }
   result += ":" + std::to_string(conn.bus_id) + ":" + std::to_string(conn.motor_id);
   return result;
-}
-
-std::vector<CalibrationPoint> ParseCsvConfig(const std::string& filepath) {
-  std::ifstream file(filepath);
-  if (!file.is_open()) {
-    throw std::runtime_error("Cannot open file: " + filepath);
-  }
-
-  std::vector<CalibrationPoint> points;
-  std::string line;
-  int line_number = 0;
-  bool first_line = true;
-
-  while (std::getline(file, line)) {
-    ++line_number;
-
-    Trim(line);
-
-    // Strip inline comments: everything from the first '#' is ignored
-    const size_t comment_pos = line.find('#');
-    if (comment_pos != std::string::npos) {
-      line.erase(comment_pos);
-      Trim(line);
-    }
-
-    // Skip empty lines
-    if (line.empty()) {
-      continue;
-    }
-
-    // Skip header line (first non-empty, non-comment line)
-    if (first_line) {
-      first_line = false;
-      continue;
-    }
-
-    // Split by comma
-    std::vector<std::string> columns;
-    std::stringstream ss(line);
-    std::string cell;
-    while (std::getline(ss, cell, ',')) {
-      Trim(cell);
-      columns.push_back(cell);
-    }
-
-    if (columns.size() != 3) {
-      std::cerr << "Error line " << line_number << ": expected 3 columns, got " << columns.size() << " (skipped)\n";
-      continue;
-    }
-
-    try {
-      CalibrationPoint point;
-      point.connection = ParseMotorConnection(columns[0]);
-      point.current = std::stof(columns[1]);
-
-      // Validate: reject NaN/Inf
-      if (!std::isfinite(point.current)) {
-        throw std::runtime_error("current must be finite");
-      }
-
-      point.set_position_deg = std::stof(columns[2]);
-      if (!std::isfinite(point.set_position_deg)) {
-        throw std::runtime_error("set_position must be finite");
-      }
-
-      points.push_back(std::move(point));
-    } catch (const std::exception& e) {
-      std::cerr << "Error line " << line_number << ": " << e.what() << " (skipped)\n";
-      continue;
-    }
-  }
-
-  return points;
 }
 
 }  // namespace emzero

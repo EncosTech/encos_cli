@@ -28,7 +28,7 @@ void RefreshRangesIfNeeded(AppState& app_state) {
   }
 
   try {
-    const auto ranges = selected_motor->motor->GetPVTRanges();
+    const auto ranges = selected_motor->motor->GetProperties();
     ControlPanelState& state = app_state.control_panel_state;
     state.kp_min = ranges.kp.min;
     state.kp_max = ranges.kp.max;

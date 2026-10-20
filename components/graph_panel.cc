@@ -31,7 +31,7 @@ void RefreshGraphRangesIfNeeded(AppState& app_state) {
   }
 
   try {
-    const auto ranges = selected_motor->motor->GetPVTRanges();
+    const auto ranges = selected_motor->motor->GetProperties();
     GraphPanelState& state = app_state.graph_panel_state;
     state.speed_min = ranges.speed.min;
     state.speed_max = ranges.speed.max;

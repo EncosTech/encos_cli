@@ -3,6 +3,8 @@
 #include "src/cli/slave_config.h"
 
 #include <doctest.hpp>
+
+#include "src/cli/help_text.h"
 namespace motor_cli {
 TEST_CASE("Slave targets select transport without claiming motor targets") {
   auto command = ParseSlaveConfig({"config", "Ethernet:eth0:10", "ip"});
@@ -81,14 +83,63 @@ TEST_CASE("Slave configuration maps indices to IP and saves before reboot") {
   }
 }
 
-TEST_CASE("USB CAN modes stage persistent configuration before reboot") {
-  for (const auto* mode : {"usb3can", "usb8can"}) {
-    const auto request = motor_cli::ParseSlaveConfig({"config", "Ethernet:/dev/ttyACM1", "mode", "set", mode});
+TEST_CASE("Every gateway mode stages persistent configuration before reboot") {
+  for (const auto* mode : {"ecat", "enet", "udp", "usb3can", "usb8can", "sim", "simsensors"}) {
+    const std::string token = mode;
+    const std::string firmware = token == "ecat"      ? "ECAT"
+                                 : token == "enet"    ? "UDP"
+                                 : token == "udp"     ? "UDP"
+                                 : token == "usb3can" ? "USB3CAN"
+                                 : token == "usb8can" ? "USB8CAN"
+                                 : token == "sim"     ? "SIM"
+                                                      : "SIMSENSORS";
+    const auto request = motor_cli::ParseSlaveConfig({"config", "Ethernet:/dev/ttyACM1", "mode", "set", token});
     REQUIRE(request);
-    CHECK(request->commands ==
-          std::vector<std::string>{std::string("MODE SET ") + (std::string(mode) == "usb3can" ? "USB3CAN" : "USB8CAN"),
-                                   "CONFIG SAVE", "REBOOT"});
+    CHECK(request->commands == std::vector<std::string>{"MODE SET " + firmware, "CONFIG SAVE", "REBOOT"});
   }
 
-  CHECK(motor_cli::SlaveConfigHelp().find("ecat|enet|usb3can|usb8can") != std::string::npos);
+  /* The CDC spelling is not the CLI token: near misses and wrong case are refused
+   * rather than silently mapped, so a mode change cannot target the wrong firmware mode. */
+  for (const auto* bad : {"simsensor", "Sim", "motorsim", "SIMSENSORS", ""})
+    CHECK_THROWS(motor_cli::ParseSlaveConfig({"config", "Ethernet:/dev/ttyACM1", "mode", "set", bad}));
+
+  CHECK(motor_cli::SlaveConfigHelp().find("ecat|enet|usb3can|usb8can|sim|simsensors") != std::string::npos);
+}
+
+TEST_CASE("Firmware download is restricted to CDC and takes exactly one path") {
+  for (const auto* target : {"Ethernet:/dev/ttyACM0", "Ethercat:/dev/ttyACM0", "EthercatIGH:/dev/ttyACM0"}) {
+    const auto request = motor_cli::ParseSlaveConfig({"config", target, "download", "firmware folder/demo.elf"});
+    REQUIRE(request);
+    CHECK(request->commands.empty());
+    CHECK(request->download == "firmware folder/demo.elf");
+  }
+  CHECK_THROWS(motor_cli::ParseSlaveConfig({"config", "Ethernet:eth0:0", "download", "demo.bin"}));
+  CHECK_THROWS(motor_cli::ParseSlaveConfig({"config", "Ethernet:/dev/ttyACM0", "download"}));
+  CHECK_THROWS(motor_cli::ParseSlaveConfig({"config", "Ethernet:/dev/ttyACM0", "download", "a.bin", "b.bin"}));
+}
+
+#if defined(_WIN32)
+TEST_CASE("Firmware download accepts Windows COM ports and drive paths") {
+  auto request =
+      motor_cli::ParseSlaveConfig({"config", "EthercatIGH:COM12", "download", R"(C:\firmware files\demo.elf)"});
+  REQUIRE(request);
+  CHECK(request->target.endpoint == "COM12");
+  CHECK(request->download == R"(C:\firmware files\demo.elf)");
+}
+#endif
+
+TEST_CASE("Gateway version is read-only on Ethernet and CDC") {
+  for (const auto& target : {"Ethernet:eth0:9", "Ethernet:eth0:1234567890abcdef1234567890abcdef",
+                             "Ethernet:/dev/ttyACM0", "EthercatIGH:/dev/ttyACM0"}) {
+    for (const auto& suffix : {std::vector<std::string>{"version"}, std::vector<std::string>{"version", "get"}}) {
+      std::vector<std::string> args{"config", target};
+      args.insert(args.end(), suffix.begin(), suffix.end());
+      const auto request = motor_cli::ParseSlaveConfig(args);
+      REQUIRE(request);
+      CHECK(request->commands == std::vector<std::string>{"VERSION GET"});
+      CHECK_FALSE(request->download);
+    }
+    CHECK_THROWS(motor_cli::ParseSlaveConfig({"config", target, "version", "set", "2.0.0"}));
+    CHECK_THROWS(motor_cli::ParseSlaveConfig({"config", target, "version", "get", "extra"}));
+  }
 }

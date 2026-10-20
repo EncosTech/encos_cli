@@ -2,11 +2,8 @@
 
 #include "src/cli/battery.h"
 
-#include <encos/battery/battery.h>
+#include <encos/device/battery/battery.h>
 #include <encos/encos_motor.h>
-#include <sys/select.h>
-#include <termios.h>
-#include <unistd.h>
 
 #include <algorithm>
 #include <atomic>
@@ -22,40 +19,14 @@
 #include <vector>
 
 #include "cli_command.h"
+#include "src/cli/adapter_cli_utils.h"
+#include "src/cli/help_text.h"
 #include "src/cli/interface_name.h"
+#include "src/cli/platform_compat.h"
 
 namespace {
 
 std::atomic<bool> g_stop_requested{false};
-
-class TerminalRawMode {
-public:
-  TerminalRawMode() {
-    if (!isatty(STDIN_FILENO)) {
-      return;
-    }
-    if (tcgetattr(STDIN_FILENO, &original_) != 0) {
-      return;
-    }
-    termios raw = original_;
-    raw.c_lflag = static_cast<tcflag_t>(raw.c_lflag & ~(ICANON | ECHO));
-    raw.c_cc[VMIN] = 0;
-    raw.c_cc[VTIME] = 0;
-    if (tcsetattr(STDIN_FILENO, TCSANOW, &raw) == 0) {
-      active_ = true;
-    }
-  }
-
-  ~TerminalRawMode() {
-    if (active_) {
-      tcsetattr(STDIN_FILENO, TCSANOW, &original_);
-    }
-  }
-
-private:
-  termios original_{};
-  bool active_{false};
-};
 
 void HandleSignal(int) { g_stop_requested.store(true); }
 
@@ -69,30 +40,10 @@ private:
   void (*previous_handler_)(int);
 };
 
-bool QuitKeyPressed() {
-  if (!isatty(STDIN_FILENO)) {
-    return false;
-  }
-
-  fd_set read_fds;
-  FD_ZERO(&read_fds);
-  FD_SET(STDIN_FILENO, &read_fds);
-  timeval timeout{0, 0};
-  if (select(STDIN_FILENO + 1, &read_fds, nullptr, nullptr, &timeout) <= 0) {
-    return false;
-  }
-
-  char input = '\0';
-  if (read(STDIN_FILENO, &input, 1) != 1) {
-    return false;
-  }
-  return input == 'q' || input == 'Q';
-}
-
-encos::Bus* OpenBus(const motor_cli::SensorTarget& target) {
-  encos::BaseAdapterPtr adapter =
-      encos::MakeAdapter(target.adapter_type, target.adapter_id,
-                         motor_cli::GetLoggerName(target.adapter_type, target.adapter_id), encos::LogLevel::Warn);
+encos::Bus* OpenBus(const motor_cli::SensorTarget& target, const AdapterTimingOptions& timing) {
+  encos::BaseAdapterPtr adapter = MakeAdapterWithTiming(
+      target.adapter_type, target.adapter_id, motor_cli::GetLoggerName(target.adapter_type, target.adapter_id),
+      encos::LogLevel::Warn, timing);
   if (!adapter) {
     throw std::runtime_error("Failed to create adapter: '" + target.adapter_type + ":" + target.adapter_id + "'");
   }
@@ -196,7 +147,9 @@ int RunBatteryCommand(int argc, char** argv) {
   }
 
   motor_cli::SensorCommand command;
+  AdapterTimingOptions timing;
   try {
+    timing = StripAdapterTimingFlags(arguments);
     command = motor_cli::ParseBatteryCommand(arguments);
   } catch (const std::exception& error) {
     std::cerr << "Error: " << error.what() << '\n';
@@ -205,7 +158,7 @@ int RunBatteryCommand(int argc, char** argv) {
   }
 
   try {
-    encos::Bus* bus = OpenBus(command.target);
+    encos::Bus* bus = OpenBus(command.target, timing);
     encos::Battery* battery = bus->GetBattery(command.target.device_idx);
     if (!battery) {
       throw std::runtime_error("Failed to get target battery");
@@ -219,14 +172,13 @@ int RunBatteryCommand(int argc, char** argv) {
 
     g_stop_requested.store(false);
     SignalGuard sigint_guard(SIGINT);
-    TerminalRawMode terminal_raw_mode;
+    motor_cli::platform::TerminalRawMode terminal_raw_mode;
 
     using namespace std::chrono_literals;
-    const bool in_place_refresh =
-        isatty(STDOUT_FILENO) != 0 && std::getenv("TERM") != nullptr && std::string(std::getenv("TERM")) != "dumb";
+    const bool in_place_refresh = motor_cli::platform::SupportsInPlaceRefresh();
     std::size_t previous_line_count = 0;
     while (!g_stop_requested.load()) {
-      if (QuitKeyPressed()) {
+      if (motor_cli::platform::QuitKeyPressed()) {
         break;
       }
 

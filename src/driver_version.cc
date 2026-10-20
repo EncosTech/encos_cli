@@ -2,7 +2,13 @@
 
 #include "src/driver_version.h"
 
+#if defined(_WIN32)
+// clang-format off
+#include <windows.h>
+// clang-format on
+#else
 #include <dlfcn.h>
+#endif
 
 #include <array>
 #include <cctype>
@@ -11,7 +17,7 @@
 
 namespace {
 
-constexpr const char* kSupportedEncosDriverVersionRange = "3.3.0 <= libencosdriver < 3.4.0";
+constexpr const char* kSupportedEncosDriverVersionRange = "4.0.0 <= libencosdriver < 4.1.0";
 using EncosDriverVersionFunction = const char* (*)();
 
 bool ParseVersionComponent(std::string_view text, std::uint32_t* value) {
@@ -55,7 +61,26 @@ bool ParseVersion(const std::string& text, std::array<std::uint32_t, 3>* version
 }  // namespace
 
 std::optional<std::string> GetLoadedEncosDriverVersion() {
-  void* handle = dlopen("libencosdriver.so.3", RTLD_LAZY | RTLD_NOLOAD);
+#if defined(_WIN32)
+  HMODULE handle = GetModuleHandleA("encosdriver.dll");
+  if (handle == nullptr) {
+    return std::nullopt;
+  }
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-function-type"
+#endif
+  const auto get_version = reinterpret_cast<EncosDriverVersionFunction>(GetProcAddress(handle, "encos_get_version"));
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+  if (get_version == nullptr) {
+    return std::nullopt;
+  }
+  const char* version = get_version();
+  return version == nullptr ? std::nullopt : std::optional<std::string>(version);
+#else
+  void* handle = dlopen("libencosdriver.so.4", RTLD_LAZY | RTLD_NOLOAD);
   if (handle == nullptr) {
     return std::nullopt;
   }
@@ -70,6 +95,7 @@ std::optional<std::string> GetLoadedEncosDriverVersion() {
   const std::optional<std::string> result = version == nullptr ? std::nullopt : std::optional<std::string>(version);
   dlclose(handle);
   return result;
+#endif
 }
 
 bool IsSupportedEncosDriverVersion(const std::optional<std::string>& version) {
@@ -82,8 +108,9 @@ bool IsSupportedEncosDriverVersion(const std::optional<std::string>& version) {
     return false;
   }
 
-  constexpr std::array<std::uint32_t, 3> kMinimumVersion{3, 3, 0};
-  constexpr std::array<std::uint32_t, 3> kMaximumVersion{3, 4, 0};
+  // 与 kSupportedEncosDriverVersionRange 保持一致：修改其一必须同步另一处
+  constexpr std::array<std::uint32_t, 3> kMinimumVersion{4, 0, 0};
+  constexpr std::array<std::uint32_t, 3> kMaximumVersion{4, 1, 0};
   return parsed_version >= kMinimumVersion && parsed_version < kMaximumVersion;
 }
 

@@ -17,12 +17,6 @@ struct MotorConnection {
   uint16_t motor_id{0};
 };
 
-struct CalibrationPoint {
-  MotorConnection connection;
-  float current;           // A，符号表示方向
-  float set_position_deg;  // degrees
-};
-
 struct AdapterKey {
   std::string type;
   std::string id;
@@ -34,8 +28,5 @@ struct AdapterKeyHash {
     return std::hash<std::string>{}(key.type) ^ (std::hash<std::string>{}(key.id) << 1);
   }
 };
-
-MotorConnection ParseMotorConnection(const std::string& target_str);
-std::string FormatConnection(const MotorConnection& conn);
 
 }  // namespace emzero

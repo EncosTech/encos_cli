@@ -22,10 +22,10 @@ struct SlaveConfigTarget {
 struct SlaveConfigRequest {
   SlaveConfigTarget target;
   std::vector<std::string> commands;
+  std::optional<std::string> download;
 };
 /** @brief 仅将指定的Ethernet/Ethercat连接串识别为从站配置；其他目标保留电机语义。 */
 std::optional<SlaveConfigRequest> ParseSlaveConfig(const std::vector<std::string>& args);
 /** @brief 执行从站配置，写配置成功保存后自动重启。 */
 std::optional<int> RunSlaveConfig(const std::vector<std::string>& args);
-std::string SlaveConfigHelp();
 }  // namespace motor_cli

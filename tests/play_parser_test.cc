@@ -3,6 +3,7 @@
 #include <argparse/argparse.hpp>
 #include <chrono>
 #include <doctest.hpp>
+#include <filesystem>
 #include <limits>
 #include <sstream>
 #include <string>
@@ -325,7 +326,8 @@ TEST_CASE("Play motor snapshots keep unavailable telemetry last in either direct
 }
 
 TEST_CASE("Play log paths and motor errors have readable representations") {
-  CHECK(BuildPlayMotorLogBaseName("./capture", "left hip", 3) == "./capture/left_hip_3");
+  CHECK(BuildPlayMotorLogBaseName("./capture", "left hip", 3) ==
+        (std::filesystem::path("./capture") / "left_hip_3").string());
   CHECK(PlayMotorErrorName(encos::MotorError::NoError) == "NoError(0)");
   CHECK(PlayMotorErrorName(encos::MotorError::OverCurrent) == "OverCurrent(2)");
   CHECK(PlayMotorErrorName(static_cast<encos::MotorError>(42)) == "Unknown(42)");

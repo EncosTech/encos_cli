@@ -2,7 +2,7 @@
 
 #include "cli_command.h"
 
-#include <encos/battery/battery.h>
+#include <encos/device/battery/battery.h>
 
 #include <cstdint>
 #include <doctest.hpp>
@@ -11,11 +11,36 @@
 
 #include "src/cli/battery.h"
 #include "src/cli/glove.h"
+#include "src/cli/help_text.h"
 #include "src/cli/imu.h"
 #include "src/cli/pms.h"
 
 namespace motor_cli {
 namespace {
+
+TEST_CASE("config brake queries and controls support both spellings and targets") {
+  for (const std::string item : {"brake", "barke"}) {
+    for (const std::string target : {"Ethernet:eth0:0:4:1", "Ethernet:eth0:0:4:ALL"}) {
+      const auto query = ParseCliCommand({"config", "--canfd", target, item});
+      CHECK(query.item == ConfigItem::Brake);
+      CHECK(query.operation == ConfigOperation::Read);
+      CHECK(query.canfd);
+      CHECK(query.values.empty());
+      for (const std::string action : {"engage", "release"}) {
+        const auto command = ParseCliCommand({"config", "--canfd", target, item, action});
+        CHECK(command.item == ConfigItem::Brake);
+        CHECK(command.operation == ConfigOperation::Set);
+        CHECK(command.canfd);
+        REQUIRE(command.values.size() == 1U);
+        CHECK(command.values[0] == action);
+      }
+    }
+    for (const std::string action : {"set", "0", "1", "full", "status"}) {
+      CHECK_THROWS_AS(ParseCliCommand({"config", "Ethernet:eth0:0:4:1", item, action}), std::runtime_error);
+    }
+    CHECK_THROWS_AS(ParseCliCommand({"config", "Ethernet:eth0:0:4:1", item, "engage", "extra"}), std::runtime_error);
+  }
+}
 
 TEST_CASE("ParseMotorTarget accepts four-part target") {
   const MotorTarget target = ParseMotorTarget("Ethercat:eth0:0:1");
@@ -208,6 +233,37 @@ TEST_CASE("ParseImuCommand parses show action") {
   CHECK(command.target.adapter_id == "eth0");
   CHECK(command.target.bus_id == 0);
   CHECK(command.target.device_idx == 1);
+}
+
+TEST_CASE("ParseImuCommand parses target-first start and stop") {
+  for (const std::string action : {"start", "stop"}) {
+    for (const std::string target : {"Ethercat:eth0:7", "Ethercat:eth0:7:2", "Ethercat:eth0:3:7:2"}) {
+      const SensorCommand command = ParseImuCommand({"imu", target, action});
+      CHECK(command.action == (action == "start" ? SensorCommandAction::Start : SensorCommandAction::Stop));
+      CHECK(command.target.adapter_type == "Ethercat");
+      CHECK(command.target.adapter_id == "eth0");
+      CHECK(command.target.bus_id == 7);
+      CHECK(command.target.device_idx == (target == "Ethercat:eth0:7" ? 0 : 2));
+      if (target == "Ethercat:eth0:3:7:2") {
+        REQUIRE(command.target.slave_id.has_value());
+        CHECK(*command.target.slave_id == 3);
+      } else {
+        CHECK(!command.target.slave_id.has_value());
+      }
+    }
+  }
+}
+
+TEST_CASE("ParseImuCommand rejects invalid control commands") {
+  for (const std::string target : {"Ethercat:eth0", "Ethercat:eth0:", "Ethercat:eth0:ALL", "Ethercat:eth0:-1",
+                                   "Ethercat:eth0:abc", "Ethercat:eth0:7:65536", "Ethercat:eth0:3:7:2:0"}) {
+    CHECK_THROWS_AS(ParseImuCommand({"imu", target, "start"}), std::runtime_error);
+    CHECK_THROWS_AS(ParseImuCommand({"imu", target, "stop"}), std::runtime_error);
+  }
+  CHECK_THROWS_AS(ParseImuCommand({"imu", "Ethercat:eth0:7:2", "clear"}), std::runtime_error);
+  CHECK_THROWS_AS(ParseImuCommand({"imu", "Ethercat:eth0:7:ALL", "start"}), std::runtime_error);
+  CHECK_THROWS_AS(ParseImuCommand({"imu", "Ethercat:eth0::2", "stop"}), std::runtime_error);
+  CHECK_THROWS_AS(ParseImuCommand({"imu", "Ethercat:eth0:7:2", "start", "extra"}), std::runtime_error);
 }
 
 TEST_CASE("ParseBatteryCommand parses show and clear actions") {
@@ -550,7 +606,8 @@ TEST_CASE("BuildTopLevelHelp describes TUI and command mode") {
   CHECK(help.find("battery") != std::string::npos);
   CHECK(help.find("pms") != std::string::npos);
   CHECK(help.find("glove") != std::string::npos);
-  CHECK(help.find("zero") != std::string::npos);
+  // zero 命令已随标定流程下线
+  CHECK(help.find("zero") == std::string::npos);
   CHECK(help.find("Scan output:") == std::string::npos);
   CHECK(help.find("Control examples:") == std::string::npos);
   CHECK(help.find("Readable items:") == std::string::npos);
