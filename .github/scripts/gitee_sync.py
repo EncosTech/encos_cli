@@ -249,8 +249,16 @@ def sync_git(gitee, source, target_path, target, directory):
     git(mirror, "fetch", "--force", "--prune", "origin", "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*")
     if not git(mirror, "for-each-ref", "--format=%(refname)", "refs/heads", capture=True):
         raise RuntimeError("Source has no branches; refusing to prune the destination")
+    # Keep original commits reachable in LOCAL-ONLY refs. After filtering, a
+    # bitmap spanning both histories lets Git omit blobs the destination owns.
+    originals = git(mirror, 'for-each-ref', '--format=%(objectname) %(refname)',
+                    'refs/heads', 'refs/tags', capture=True).splitlines()
+    for line in originals:
+        oid, ref = line.split(' ', 1)
+        git(mirror, 'update-ref', 'refs/sync-source/' + ref.removeprefix('refs/'), oid)
     maps = submodule_mappings(mirror, directory, stack=(source['name'].lower(),))
     filter_repository(mirror, maps)
+    git(mirror, 'repack', '-adb')
     git(mirror, "remote", "add", "gitee", f"https://gitee.com/{target['full_name']}.git")
     # Submodule gitlinks are preserved by git-filter-repo. Never initialize or
     # execute submodules as part of mirroring the parent repository.
