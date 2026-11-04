@@ -265,7 +265,8 @@ def sync_git(gitee, source, target_path, target, directory):
             "lfs", "push", "--all", "gitee")
     refspecs = ("+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*")
     # Avoid chunked HTTP uploads: some Gitee/proxy paths stall on streamed packs.
-    git(mirror, '-c', 'http.postBuffer=268435456', "push", "--progress", "gitee", *refspecs)
+    git(mirror, '-c', 'http.version=HTTP/1.1', '-c', 'http.postBuffer=268435456',
+        "push", "--progress", "gitee", *refspecs)
     if target.get("default_branch") != source["default_branch"]:
         gitee.request("PATCH", target_path, data={"default_branch": source["default_branch"]})
     git(mirror, "push", "--prune", "gitee", *refspecs)
