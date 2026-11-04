@@ -109,12 +109,9 @@ class API:
 
 def git(directory, *args, capture=False):
     print('git ' + ' '.join(args), flush=True)
-    env = os.environ.copy()
-    if 'push' in args:
-        env['GIT_TRACE'] = '1'
     result = subprocess.run(["git", "-C", str(directory), '-c', 'http.lowSpeedLimit=1024',
                              '-c', 'http.lowSpeedTime=60', *args], check=True,
-                            stdout=subprocess.PIPE if capture else None, text=True, timeout=1200, env=env)
+                            stdout=subprocess.PIPE if capture else None, text=True, timeout=1200)
     return result.stdout.strip() if capture else None
 
 
@@ -313,7 +310,7 @@ def sync_releases(github, gitee, source_path, target_path, directory):
     for release in reversed(source):
         tag = release["tag_name"]
         payload = {"tag_name": tag, "name": release.get("name") or tag,
-                   "body": transform_text(release.get("body")) or " ",
+                   "body": transform_text(release.get("body")).strip() or f"Release {tag}",
                    "prerelease": release.get("prerelease", False)}
         target = targets.get(tag)
         if target is None:
