@@ -19,9 +19,15 @@ Branch and tag names, commit authors, timestamps and topology are retained. Gite
 is a generated copy: do not develop directly there. Destination-only branches,
 tags, releases and release attachments are deleted during reconciliation.
 
-Git LFS objects are transferred separately before updating Git refs. Submodules
-are not recursively checked out or executed. Existing externally configured Gitee
-webhooks/pipelines are independent of `.github/` and should be reviewed separately.
+Git LFS objects are transferred separately before updating Git refs, using explicit
+source/destination endpoints. Submodules are never checked out or executed.
+EncosTech submodules with rewritten URLs or relative sibling URLs have their gitlink
+commit IDs mapped using the same deterministic filter. Their GitHub repositories
+must be readable by the workflow and already mirrored to Gitee. Missing commits,
+cycles, or ambiguous historical module changes fail rather than publish broken refs.
+Third-party submodule URLs and commit IDs stay intact. Existing externally configured
+Gitee webhooks/pipelines are independent of `.github/`; the script checks push/tag
+hooks and emits a warning when they exist or the token cannot inspect them.
 
 Runs are serialized per repository; new runs never interrupt active transfers.
 An HTML comment in each Gitee release stores source asset fingerprints for repeatable

@@ -61,7 +61,7 @@ class API:
                 response = self.session.request(
                     method, self.base + path, params=params,
                     json=data if data and not files else None,
-                    data=data if files else None, files=files, timeout=(30, 300),
+                    data=data if files else None, files=files, timeout=(20, 300 if files else 60),
                 )
             except requests.RequestException:
                 if method == "GET" and attempt < 3:
@@ -108,8 +108,10 @@ class API:
 
 
 def git(directory, *args, capture=False):
-    result = subprocess.run(["git", "-C", str(directory), *args], check=True,
-                            stdout=subprocess.PIPE if capture else None, text=True)
+    print('git ' + ' '.join(args), flush=True)
+    result = subprocess.run(["git", "-C", str(directory), '-c', 'http.lowSpeedLimit=1024',
+                             '-c', 'http.lowSpeedTime=60', *args], check=True,
+                            stdout=subprocess.PIPE if capture else None, text=True, timeout=1200)
     return result.stdout.strip() if capture else None
 
 
@@ -156,7 +158,7 @@ def submodule_mappings(mirror, scratch, cache=None, stack=()):
             url = config.get(section, 'url', fallback='').strip('"')
             path = config.get(section, 'path', fallback='').strip('"')
             if url.startswith(('../', './')):
-                source_url = git(mirror, 'remote', 'get-url', 'origin', capture=True)
+                source_url = git(mirror, 'config', '--get', 'remote.origin.url', capture=True)
                 url = urljoin(source_url.rstrip('/') + '/', url)
             match = re.fullmatch(r'(?:https?|ssh|git)://(?:git@)?github\.com/EncosTech/([A-Za-z0-9_.-]+?)(?:\.git)?/?', url, re.I)
             if match and path:
@@ -218,6 +220,22 @@ def ensure_repository(gitee, source, owner):
     return path, target
 
 
+def check_push_hooks(gitee, target_path):
+    try:
+        hooks = gitee.pages(target_path + '/hooks')
+    except APIError as error:
+        if error.status not in (401, 403):
+            raise
+        print('::warning::Cannot inspect Gitee webhooks with this token; review Gitee pipeline triggers manually')
+        return
+    active = [str(h['id']) for h in hooks if h.get('push_events') or h.get('tag_push_events')]
+    if active:
+        print('::warning::Gitee push/tag webhooks exist (IDs: ' + ', '.join(active) +
+              '). Removing .github does not disable externally configured pipelines; review these hooks.')
+    else:
+        print('Verified: no Gitee push/tag webhooks configured', flush=True)
+
+
 def sync_git(gitee, source, target_path, target, directory):
     mirror = directory / "mirror.git"
     mirror.mkdir()
@@ -243,7 +261,7 @@ def sync_git(gitee, source, target_path, target, directory):
         git(mirror, '-c', 'lfs.url=' + target_lfs, '-c', 'lfs.pushurl=' + target_lfs,
             "lfs", "push", "--all", "gitee")
     refspecs = ("+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*")
-    git(mirror, "push", "gitee", *refspecs)
+    git(mirror, "push", "--progress", "gitee", *refspecs)
     if target.get("default_branch") != source["default_branch"]:
         gitee.request("PATCH", target_path, data={"default_branch": source["default_branch"]})
     git(mirror, "push", "--prune", "gitee", *refspecs)
@@ -335,13 +353,16 @@ def main():
     github = API("github", os.environ["GITHUB_TOKEN"])
     gitee = API("gitee", os.environ["GITEE_TOKEN"])
     source_path = "/repos/" + os.environ["GITHUB_REPOSITORY"]
+    print('Reading GitHub repository metadata', flush=True)
     source = github.request("GET", source_path)
     owner = os.environ.get("GITEE_OWNER", "EncosTech")
+    print('Checking Gitee token identity and repository access', flush=True)
     identity = gitee.request("GET", "/user")
     with tempfile.TemporaryDirectory(prefix="gitee-sync-") as temp:
         directory = Path(temp)
         prepare_credentials(directory, identity["login"])
         path, target = ensure_repository(gitee, source, owner)
+        check_push_hooks(gitee, path)
         sync_git(gitee, source, path, target, directory)
         sync_releases(github, gitee, source_path, path, directory)
     print(f"Synchronization complete: {source['full_name']} -> {owner}/{source['name']}", flush=True)
