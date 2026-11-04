@@ -63,11 +63,12 @@ class API:
                     json=data if data and not files else None,
                     data=data if files else None, files=files, timeout=(20, 300 if files else 60),
                 )
-            except requests.RequestException:
+            except requests.RequestException as error:
                 if method == "GET" and attempt < 3:
                     time.sleep(2 ** attempt)
                     continue
-                raise RuntimeError(f"{self.platform} {method} {path}: network failure") from None
+                detail = str(error).replace(self.token, '***').replace(quote(self.token, safe=''), '***')
+                raise RuntimeError(f"{self.platform} {method} {path}: {type(error).__name__}: {detail[:500]}") from None
             if method == "GET" and response.status_code in (429, 500, 502, 503, 504) and attempt < 3:
                 time.sleep(2 ** attempt)
                 continue
