@@ -109,9 +109,12 @@ class API:
 
 def git(directory, *args, capture=False):
     print('git ' + ' '.join(args), flush=True)
+    env = os.environ.copy()
+    if 'push' in args:
+        env['GIT_TRACE'] = '1'
     result = subprocess.run(["git", "-C", str(directory), '-c', 'http.lowSpeedLimit=1024',
                              '-c', 'http.lowSpeedTime=60', *args], check=True,
-                            stdout=subprocess.PIPE if capture else None, text=True, timeout=1200)
+                            stdout=subprocess.PIPE if capture else None, text=True, timeout=1200, env=env)
     return result.stdout.strip() if capture else None
 
 
