@@ -264,6 +264,10 @@ def sync_git(gitee, source, target_path, target, directory):
         git(mirror, '-c', 'lfs.url=' + target_lfs, '-c', 'lfs.pushurl=' + target_lfs,
             "lfs", "push", "--all", "gitee")
     refspecs = ("+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*")
+    # Retain destination history in a separate, non-pushed namespace so Git can
+    # reuse shared blobs even on the first filtered push into an imported repo.
+    git(mirror, 'fetch', '--no-tags', 'gitee',
+        '+refs/heads/*:refs/gitee-base/heads/*', '+refs/tags/*:refs/gitee-base/tags/*')
     # Avoid chunked HTTP uploads: some Gitee/proxy paths stall on streamed packs.
     git(mirror, '-c', 'http.version=HTTP/1.1', '-c', 'http.postBuffer=268435456',
         "push", "--progress", "gitee", *refspecs)
