@@ -1,0 +1,39 @@
+{
+  "name": "@encos/emcli",
+  "version": "2.1.4",
+  "type": "module",
+  "description": "Node.js rewrite of the Encos motor debugger",
+  "bin": {
+    "emcli": "./dist/main.js"
+  },
+  "scripts": {
+    "build": "tsup src/main.ts src/studio/driver-worker.ts --format esm --out-dir dist --clean",
+    "typecheck": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "test": "tsx --test test/*.test.ts test/*.test.tsx",
+    "gallery": "tsx src/tui/gallery.tsx",
+    "tui": "tsx src/main.ts tui"
+  },
+  "dependencies": {
+    "@encos/emcli-native": "workspace:*",
+    "ink": "8.0.0",
+    "react": "19.3.1",
+    "string-width": "8.3.0"
+  },
+  "peerDependencies": {
+    "@encos/encos-driver-native": ">=4.3.1 <4.4.0"
+  },
+  "devDependencies": {
+    "@encos/encos-driver-native": "4.3.1",
+    "@types/node": "^22.10.0",
+    "@types/react": "19.3.0",
+    "ink-testing-library": "4.0.0",
+    "tsup": "^8.3.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT"
+}

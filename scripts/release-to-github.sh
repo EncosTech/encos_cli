@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Encos
 # SPDX-License-Identifier: MIT
 
 set -euo pipefail
+
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 usage() {
   cat <<'EOF'
@@ -12,16 +15,12 @@ Required options:
   --github-repo OWNER/REPO       GitHub repository used by the REST API
   --github-repo-url URL          GitHub repository Git URL
   --gitea-url URL                Gitea base URL
-  --gitea-package-owner OWNER    Owner of the Gitea Debian package registry
+  --gitea-package-owner OWNER    Owner of the emcli generic packages
 
 Optional options:
   --source-ref REF               Source branch or tag (default: main)
+  --source-sha1 SHA1             Exact commit belonging to the source branch
   --github-branch BRANCH         GitHub snapshot branch (default: main)
-  --debian-distributions CSV     Debian distributions (default: jammy,noble)
-  --debian-architectures CSV     Debian architectures (default: amd64,arm64)
-  --debian-component NAME        Debian component (default: main)
-  --cmake-project-name NAME      CMake project used to extract the version
-  --debian-package-name NAME     Debian Package field to publish
   --git-user-name NAME           Snapshot commit author name
   --git-user-email EMAIL         Snapshot commit author email
   --github-api-url URL           GitHub REST API base URL
@@ -51,16 +50,12 @@ require_value() {
 
 source_repo=""
 source_ref="main"
+source_sha1=""
 github_repo=""
 github_repo_url=""
 github_branch="main"
 gitea_url=""
 gitea_package_owner=""
-debian_distributions="jammy,noble"
-debian_architectures="amd64,arm64"
-debian_component="main"
-cmake_project_name="EncosMotorCLI"
-debian_package_name="emcli"
 git_user_name="Encos Release Bot"
 git_user_email="release-bot@encos.cn"
 github_api_url="https://api.github.com"
@@ -79,6 +74,11 @@ while (($#)); do
     --source-ref)
       require_value "$1" "${2:-}"
       source_ref=$2
+      shift 2
+      ;;
+    --source-sha1)
+      require_value "$1" "${2:-}"
+      source_sha1=$2
       shift 2
       ;;
     --github-repo)
@@ -104,31 +104,6 @@ while (($#)); do
     --gitea-package-owner)
       require_value "$1" "${2:-}"
       gitea_package_owner=$2
-      shift 2
-      ;;
-    --debian-distributions)
-      require_value "$1" "${2:-}"
-      debian_distributions=$2
-      shift 2
-      ;;
-    --debian-architectures)
-      require_value "$1" "${2:-}"
-      debian_architectures=$2
-      shift 2
-      ;;
-    --debian-component)
-      require_value "$1" "${2:-}"
-      debian_component=$2
-      shift 2
-      ;;
-    --cmake-project-name)
-      require_value "$1" "${2:-}"
-      cmake_project_name=$2
-      shift 2
-      ;;
-    --debian-package-name)
-      require_value "$1" "${2:-}"
-      debian_package_name=$2
       shift 2
       ;;
     --git-user-name)
@@ -176,6 +151,9 @@ while (($#)); do
 done
 
 [[ -n "${source_repo}" ]] || die "--source-repo is required"
+if [[ -n "${source_sha1}" && ! "${source_sha1}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+  die "--source-sha1 must be a complete 40-character hexadecimal commit SHA1"
+fi
 [[ -n "${github_repo}" ]] || die "--github-repo is required"
 [[ "${github_repo}" == */* ]] || die "--github-repo must use OWNER/REPO format"
 [[ -n "${github_repo_url}" ]] || die "--github-repo-url is required"
@@ -293,10 +271,32 @@ target_dir="${work_dir}/target"
 package_dir="${work_dir}/packages"
 mkdir -p "${package_dir}"
 
-printf 'Cloning source snapshot from %s (%s)\n' "${source_repo}" "${source_ref}"
-git_with_auth "${gitea_url}" "${GITEA_USERNAME}" "${GITEA_TOKEN}" \
-  -c protocol.file.allow=always clone --quiet --depth 1 --branch "${source_ref}" \
-  "${source_repo}" "${source_dir}"
+if [[ -n "${source_sha1}" ]]; then
+  printf 'Cloning source snapshot from %s (%s at %s)\n' \
+    "${source_repo}" "${source_ref}" "${source_sha1}"
+  git_with_auth "${gitea_url}" "${GITEA_USERNAME}" "${GITEA_TOKEN}" \
+    -c protocol.file.allow=always clone --quiet --no-checkout \
+    --single-branch --branch "${source_ref}" "${source_repo}" "${source_dir}"
+
+  if ! git -C "${source_dir}" cat-file -e "${source_sha1}^{commit}" 2>/dev/null; then
+    die "source commit ${source_sha1} does not exist"
+  fi
+  resolved_source_sha1=$(git -C "${source_dir}" rev-parse "${source_sha1}^{commit}")
+  source_branch_ref="refs/remotes/origin/${source_ref}"
+  if ! git -C "${source_dir}" show-ref --verify --quiet "${source_branch_ref}"; then
+    die "--source-sha1 requires --source-ref to name a branch"
+  fi
+  if ! git -C "${source_dir}" merge-base --is-ancestor \
+    "${resolved_source_sha1}" "${source_branch_ref}"; then
+    die "source commit ${source_sha1} does not belong to branch ${source_ref}"
+  fi
+  git -C "${source_dir}" checkout --quiet --detach "${resolved_source_sha1}"
+else
+  printf 'Cloning source snapshot from %s (%s)\n' "${source_repo}" "${source_ref}"
+  git_with_auth "${gitea_url}" "${GITEA_USERNAME}" "${GITEA_TOKEN}" \
+    -c protocol.file.allow=always clone --quiet --depth 1 --branch "${source_ref}" \
+    "${source_repo}" "${source_dir}"
+fi
 
 update_submodules_safely() {
   local repository_dir=$1
@@ -371,29 +371,26 @@ PY
 
 update_submodules_safely "${source_dir}"
 
-if [[ -n "${release_version}" ]]; then
-  [[ "${release_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || \
-    die "--release-version must use X.Y.Z format"
-  version=${release_version}
-else
-  version=$(python3 - "${source_dir}/CMakeLists.txt" "${cmake_project_name}" <<'PY'
-import re
+version=$(python3 -B - "${script_dir}/ci" "${source_dir}" "${release_version}" "${snapshot_only}" <<'PY'
 import sys
 from pathlib import Path
 
-content = Path(sys.argv[1]).read_text(encoding="utf-8")
-project_name = sys.argv[2]
-match = re.search(
-    r"project\s*\(\s*" + re.escape(project_name) + r"\s+VERSION\s+([0-9]+(?:\.[0-9]+){2})\b",
-    content,
-    re.IGNORECASE,
-)
-if not match:
-    raise SystemExit(f"Unable to extract {project_name} version from CMakeLists.txt")
-print(match.group(1))
+scripts, source, override, snapshot_only = sys.argv[1:]
+sys.path.insert(0, scripts)
+from package import checked_version, version
+
+try:
+    if override and snapshot_only == 'true':
+        result = checked_version(override)
+    else:
+        result = version(Path(source))
+        if override and override != result:
+            raise ValueError('--release-version differs from the source version')
+except (KeyError, OSError, TypeError, ValueError) as error:
+    raise SystemExit(f'Unable to read the emcli release version: {error}') from error
+print(result)
 PY
-  )
-fi
+)
 if [[ -n "${version_output_file}" ]]; then
   printf '%s\n' "${version}" >"${version_output_file}"
 fi
@@ -434,6 +431,14 @@ rsync -a --delete --delete-excluded \
   --exclude='.gitmodules' \
   --exclude='/.gitea/' \
   --exclude='/openspec/' \
+  --exclude='AGENTS.md' \
+  --exclude='CLAUDE.md' \
+  --exclude='.claude' \
+  --exclude='.codex' \
+  --exclude='.agents' \
+  --exclude='.cursor' \
+  --exclude='.gemini' \
+  --exclude='.opencode' \
   "${source_dir}/" "${target_dir}/"
 
 git -C "${target_dir}" add --all
@@ -471,96 +476,11 @@ case "${tag_status}" in
 esac
 
 gitea_auth=$(make_basic_auth "${GITEA_USERNAME}" "${GITEA_TOKEN}")
-IFS=',' read -r -a distributions <<<"${debian_distributions}"
-IFS=',' read -r -a architectures <<<"${debian_architectures}"
-package_manifest="${work_dir}/package-manifest.tsv"
-: >"${package_manifest}"
-
-for distribution in "${distributions[@]}"; do
-  distribution=${distribution//[[:space:]]/}
-  [[ -n "${distribution}" ]] || die "empty Debian distribution"
-  for architecture in "${architectures[@]}"; do
-    architecture=${architecture//[[:space:]]/}
-    [[ -n "${architecture}" ]] || die "empty Debian architecture"
-    index_file="${work_dir}/Packages-${distribution}-${architecture}"
-    index_url="${gitea_url%/}/api/packages/${gitea_package_owner}/debian/dists/${distribution}/${debian_component}/binary-${architecture}/Packages"
-    curl --fail-with-body --silent --show-error --location \
-      --header "Authorization: Basic ${gitea_auth}" \
-      --output "${index_file}" "${index_url}"
-    python3 - "${index_file}" "${version}" "${distribution}" "${architecture}" \
-      "${debian_package_name}" \
-      >>"${package_manifest}" <<'PY'
-import re
-import sys
-from pathlib import Path
-
-index_path, wanted_version, distribution, architecture, wanted_package = sys.argv[1:]
-matches = 0
-for paragraph in Path(index_path).read_text(encoding="utf-8").split("\n\n"):
-    fields = {}
-    for line in paragraph.splitlines():
-        if ": " in line:
-            key, value = line.split(": ", 1)
-            fields[key] = value
-    if fields.get("Package") != wanted_package or fields.get("Version") != wanted_version:
-        continue
-    required = ("Filename", "Architecture", "Size", "SHA256")
-    if any(not fields.get(field) for field in required):
-        raise SystemExit(f"Incomplete Debian index entry in {index_path}")
-    if fields["Architecture"] != architecture:
-        raise SystemExit(f"Unexpected architecture in {index_path}: {fields['Architecture']}")
-    if not fields["Filename"].endswith(".deb"):
-        raise SystemExit(f"Unexpected package filename in {index_path}")
-    if not fields["Size"].isdigit() or not re.fullmatch(r"[0-9a-fA-F]{64}", fields["SHA256"]):
-        raise SystemExit(f"Invalid package integrity metadata in {index_path}")
-    print(
-        f"{distribution}\t{architecture}\t{fields['Filename']}\t"
-        f"{fields['Size']}\t{fields['SHA256'].lower()}"
-    )
-    matches += 1
-if not matches:
-    raise SystemExit(
-        f"No {wanted_package} Debian package version {wanted_version} "
-        f"for {distribution}/{architecture}"
-    )
-PY
-  done
-done
-
-sort -u -o "${package_manifest}" "${package_manifest}"
-[[ -s "${package_manifest}" ]] || die "no Debian packages found for version ${version}"
-
-declare -A downloaded_names=()
-while IFS=$'\t' read -r distribution architecture package_path package_size package_sha256; do
-  package_name=$(basename "${package_path}")
-  asset_name="${package_name%.deb}_${distribution}.deb"
-  existing_path=${downloaded_names["${asset_name}"]:-}
-  if [[ -n "${existing_path}" && "${existing_path}" != "${package_path}" ]]; then
-    die "multiple Debian packages use the asset name ${asset_name}"
-  fi
-  if [[ -n "${existing_path}" ]]; then
-    continue
-  fi
-  downloaded_names["${asset_name}"]=${package_path}
-  package_url="${gitea_url%/}/api/packages/${gitea_package_owner}/debian/${package_path#/}"
-  curl --fail-with-body --silent --show-error --location \
-    --header "Authorization: Basic ${gitea_auth}" \
-    --output "${package_dir}/${asset_name}" "${package_url}"
-  python3 - "${package_dir}/${asset_name}" "${package_size}" "${package_sha256}" <<'PY'
-import hashlib
-import sys
-from pathlib import Path
-
-package_path = Path(sys.argv[1])
-expected_size = int(sys.argv[2])
-expected_sha256 = sys.argv[3]
-content = package_path.read_bytes()
-if len(content) != expected_size:
-    raise SystemExit(f"Size mismatch for {package_path.name}")
-if hashlib.sha256(content).hexdigest() != expected_sha256:
-    raise SystemExit(f"SHA256 mismatch for {package_path.name}")
-PY
-done <"${package_manifest}"
+registry_url="${gitea_url%/}/api/packages/${gitea_package_owner}/generic"
+source_commit=$(git -C "${source_dir}" rev-parse HEAD)
+GITEA_RELEASE_AUTH="${gitea_auth}" python3 -B "${script_dir}/ci/prepare-github-release.py" \
+  "${registry_url}" "${version}" "${source_commit}" "${package_dir}"
+release_assets=("${package_dir}"/*)
 
 git -C "${target_dir}" config user.name "${git_user_name}"
 git -C "${target_dir}" config user.email "${git_user_email}"
@@ -656,17 +576,17 @@ git_with_auth "${github_auth_scope}" "x-access-token" "${GH_TOKEN}" \
   -C "${target_dir}" push --quiet origin "HEAD:refs/heads/${github_branch}"
 printf 'Published source snapshot %s to GitHub.\n' "${tag}"
 
-release_payload=$(python3 - "${tag}" "${github_branch}" <<'PY'
+release_payload=$(python3 - "${tag}" "${new_commit}" <<'PY'
 import json
 import sys
 
-tag, branch = sys.argv[1:]
+tag, commit = sys.argv[1:]
 print(json.dumps({
     "tag_name": tag,
-    "target_commitish": branch,
+    "target_commitish": commit,
     "name": tag,
     "draft": True,
-    "prerelease": False,
+    "prerelease": "-" in tag,
 }))
 PY
 )
@@ -693,7 +613,7 @@ PY
 )
 draft_release_id=${release_id}
 
-for package_file in "${package_dir}"/*.deb; do
+for package_file in "${release_assets[@]}"; do
   package_name=$(basename "${package_file}")
   encoded_name=$(python3 - "${package_name}" <<'PY'
 import sys
@@ -707,7 +627,7 @@ PY
     --header "Authorization: Bearer ${GH_TOKEN}" \
     --header "Accept: application/vnd.github+json" \
     --header "X-GitHub-Api-Version: 2022-11-28" \
-    --header "Content-Type: application/vnd.debian.binary" \
+    --header "Content-Type: application/octet-stream" \
     --data-binary "@${package_file}" \
     "${github_upload_url%/}/repos/${github_repo}/releases/${release_id}/assets?name=${encoded_name}" \
     >/dev/null
@@ -727,5 +647,5 @@ curl --fail-with-body --silent --show-error \
 publication_started=false
 trap - ERR
 
-printf 'Created GitHub release %s with %s Debian package(s).\n' \
-  "${tag}" "${#downloaded_names[@]}"
+printf 'Created GitHub release %s with %s asset(s).\n' \
+  "${tag}" "${#release_assets[@]}"

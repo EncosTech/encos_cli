@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Encos
 # SPDX-License-Identifier: MIT
 
 set -euo pipefail
@@ -7,10 +8,13 @@ script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 env_file="${script_dir}/.env"
 dry_run=false
 from_environment=false
+main_sha1_override=""
+main_sha1_overridden=false
 
 usage() {
   cat <<'EOF'
-Usage: publish-github-release.sh [--env-file PATH] [--from-environment] [--dry-run]
+Usage: publish-github-release.sh [--env-file PATH] [--from-environment]
+                                 [--main-sha1 SHA1] [--dry-run]
 
 Without arguments, load scripts/.env and perform the real publication.
 
@@ -18,6 +22,7 @@ Options:
   --env-file PATH  Load another dotenv-compatible shell file
   --from-environment
                    Do not load a file; use the current environment (for CI)
+  --main-sha1 SHA1 Publish this exact commit from the main branch
   --dry-run        Validate and display non-secret configuration without publishing
   --help           Show this help
 EOF
@@ -38,6 +43,12 @@ while (($#)); do
     --dry-run)
       dry_run=true
       shift
+      ;;
+    --main-sha1)
+      [[ -n "${2:-}" ]] || die "--main-sha1 requires a value"
+      main_sha1_override=$2
+      main_sha1_overridden=true
+      shift 2
       ;;
     --from-environment)
       from_environment=true
@@ -65,8 +76,11 @@ fi
 
 MAIN_BRANCH=${MAIN_BRANCH:-${SOURCE_REF:-main}}
 OPTIONAL_BRANCHES=${OPTIONAL_BRANCHES:-}
-CMAKE_PROJECT_NAME=${CMAKE_PROJECT_NAME:-EncosMotorCLI}
-DEBIAN_PACKAGE_NAME=${DEBIAN_PACKAGE_NAME:-emcli}
+if [[ "${main_sha1_overridden}" == true ]]; then
+  MAIN_SHA1=${main_sha1_override}
+else
+  MAIN_SHA1=${MAIN_SHA1:-}
+fi
 
 required_variables=(
   GITEA_USERNAME
@@ -78,15 +92,12 @@ required_variables=(
   GITHUB_RELEASE_REPOSITORY_URL
   GITEA_URL
   GITEA_PACKAGE_OWNER
-  DEBIAN_DISTRIBUTIONS
-  DEBIAN_ARCHITECTURES
 )
 
 for variable_name in "${required_variables[@]}"; do
   [[ -n "${!variable_name:-}" ]] || die "${variable_name} is missing in ${env_file}"
 done
 
-DEBIAN_COMPONENT=${DEBIAN_COMPONENT:-main}
 GIT_USER_NAME=${GIT_USER_NAME:-Encos Release Bot}
 GIT_USER_EMAIL=${GIT_USER_EMAIL:-release-bot@encos.cn}
 GITHUB_API_URL=${GITHUB_API_URL:-https://api.github.com}
@@ -94,16 +105,19 @@ GITHUB_UPLOAD_URL=${GITHUB_UPLOAD_URL:-https://uploads.github.com}
 
 git check-ref-format --branch "${MAIN_BRANCH}" >/dev/null 2>&1 || \
   die "invalid main branch name: ${MAIN_BRANCH}"
+if [[ -n "${MAIN_SHA1}" && ! "${MAIN_SHA1}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+  die "--main-sha1 must be a complete 40-character hexadecimal commit SHA1"
+fi
 
 if [[ "${dry_run}" == true ]]; then
   printf 'Configuration is valid. No publication was performed.\n'
   printf '  Source: %s\n' "${SOURCE_REPO}"
   printf '  Main branch: %s\n' "${MAIN_BRANCH}"
+  printf '  Main SHA1: %s\n' "${MAIN_SHA1:-<branch head>}"
   printf '  Optional branches: %s\n' "${OPTIONAL_BRANCHES:-<none>}"
   printf '  GitHub: %s\n' "${GITHUB_RELEASE_REPOSITORY}"
-  printf '  Debian distributions: %s\n' "${DEBIAN_DISTRIBUTIONS}"
-  printf '  Debian architectures: %s\n' "${DEBIAN_ARCHITECTURES}"
-  printf '  Debian package: %s\n' "${DEBIAN_PACKAGE_NAME}"
+  printf '  Package registry: %s/api/packages/%s/generic/emcli-{linux-amd64,linux-arm64,windows-amd64}\n' \
+    "${GITEA_URL%/}" "${GITEA_PACKAGE_OWNER}"
   exit 0
 fi
 
@@ -118,11 +132,6 @@ run_branch() {
     --github-branch "${source_branch}" \
     --gitea-url "${GITEA_URL}" \
     --gitea-package-owner "${GITEA_PACKAGE_OWNER}" \
-    --cmake-project-name "${CMAKE_PROJECT_NAME}" \
-    --debian-package-name "${DEBIAN_PACKAGE_NAME}" \
-    --debian-distributions "${DEBIAN_DISTRIBUTIONS}" \
-    --debian-architectures "${DEBIAN_ARCHITECTURES}" \
-    --debian-component "${DEBIAN_COMPONENT}" \
     --git-user-name "${GIT_USER_NAME}" \
     --git-user-email "${GIT_USER_EMAIL}" \
     --github-api-url "${GITHUB_API_URL}" \
@@ -139,10 +148,13 @@ cleanup() {
 trap cleanup EXIT
 
 printf 'Processing main branch %s\n' "${MAIN_BRANCH}"
-run_branch "${MAIN_BRANCH}" --version-output-file "${version_file}"
+main_arguments=(--version-output-file "${version_file}")
+if [[ -n "${MAIN_SHA1}" ]]; then
+  main_arguments+=(--source-sha1 "${MAIN_SHA1}")
+fi
+run_branch "${MAIN_BRANCH}" "${main_arguments[@]}"
 main_version=$(<"${version_file}")
-[[ "${main_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || \
-  die "main branch did not provide a valid version"
+[[ -n "${main_version}" ]] || die "main branch did not provide a version"
 
 IFS=',' read -r -a optional_branches <<<"${OPTIONAL_BRANCHES}"
 for optional_branch in "${optional_branches[@]}"; do

@@ -1,0 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Encos
+# SPDX-License-Identifier: MIT
+
+# 8CAN CDC
+SUBSYSTEM=="tty", ATTRS{idVendor}=="34b7", ATTRS{idProduct}=="ffff", GROUP="plugdev", MODE="0660"
+# 3CAN CDC
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5740", GROUP="plugdev", MODE="0660"

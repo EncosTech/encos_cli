@@ -1,0 +1,1 @@
+Protocol and firmware upgrade implementation migrated from motor_cli main ed54398. serialib is vendored from external/serialib; see serialib/LICENSE. Platform-specific OTA verification remains in firmware_download_platform.cc.

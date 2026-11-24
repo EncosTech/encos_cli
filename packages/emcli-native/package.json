@@ -1,0 +1,54 @@
+{
+  "name": "@encos/emcli-native",
+  "version": "0.1.0",
+  "description": "Native performance engine for emcli (bench / stress / play), dynamically linked to @encos/encos-driver-native",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./manifest": "./manifest.json"
+  },
+  "files": [
+    "dist",
+    "manifest.json",
+    "API.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "pnpm run build:ts",
+    "build:ts": "tsup src/index.ts --format esm,cjs --dts --out-dir dist --clean",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "resolve:driver": "node scripts/resolve-driver.mjs --out build/driver.json",
+    "test": "node --test test/platform.test.mjs",
+    "test:platform": "node --test test/platform.test.mjs",
+    "build:perf": "node scripts/build-perf.mjs",
+    "test:firmware": "node scripts/test-firmware.mjs"
+  },
+  "peerDependencies": {
+    "@encos/encos-driver-native": ">=4.3.1 <4.4.0"
+  },
+  "optionalDependencies": {
+    "@encos/emcli-native-linux-x64-gnu": "0.1.0",
+    "@encos/emcli-native-linux-arm64-gnu": "0.1.0",
+    "@encos/emcli-native-win32-x64": "0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsup": "^8.3.0",
+    "typescript": "^5.7.0"
+  },
+  "publishConfig": {
+    "registry": "https://git.in.encos.cn/api/packages/packages/npm/"
+  },
+  "license": "MIT"
+}

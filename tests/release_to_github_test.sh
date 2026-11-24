@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Encos
 # SPDX-License-Identifier: MIT
 
 set -euo pipefail
@@ -32,9 +33,10 @@ git -C "${submodule_repo}" commit -q -m "initial submodule"
 
 source_repo="${test_root}/source"
 git init -q -b main "${source_repo}"
-printf 'cmake_minimum_required(VERSION 3.14)\nproject(EncosMotorCLI VERSION 1.10.0)\n' \
-  >"${source_repo}/CMakeLists.txt"
-mkdir -p "${source_repo}/include" "${source_repo}/.gitea" "${source_repo}/openspec"
+mkdir -p "${source_repo}/apps/emcli" "${source_repo}/include" "${source_repo}/.gitea" "${source_repo}/openspec"
+for manifest in package.json apps/emcli/package.json; do
+  printf '{"version":"3.2.0-rc.1"}\n' >"${source_repo}/${manifest}"
+done
 printf 'public header\n' >"${source_repo}/include/public.h"
 printf 'private workflow\n' >"${source_repo}/.gitea/private.yml"
 printf 'internal spec\n' >"${source_repo}/openspec/change.md"
@@ -42,8 +44,17 @@ git -C "${source_repo}" -c protocol.file.allow=always submodule add -q \
   "${submodule_repo}" external/example
 git -C "${source_repo}" config -f .gitmodules \
   submodule.external/example.url http://gitea.test/acme/submodule.git
+for internal_root in "${source_repo}" "${source_repo}/include"; do
+  printf 'agent rules\n' >"${internal_root}/AGENTS.md"
+  printf 'claude rules\n' >"${internal_root}/CLAUDE.md"
+  for private_dir in .claude .codex .agents .cursor .gemini .opencode; do
+    mkdir -p "${internal_root}/${private_dir}"
+    printf 'private configuration\n' >"${internal_root}/${private_dir}/config.txt"
+  done
+done
 git -C "${source_repo}" add .
 git -C "${source_repo}" commit -q -m "source snapshot"
+initial_source_sha1=$(git -C "${source_repo}" rev-parse HEAD)
 
 git_config="${test_root}/gitconfig"
 git config -f "${git_config}" url."${submodule_repo}".insteadOf \
@@ -56,6 +67,12 @@ printf 'stale\n' >"${target_seed}/stale.txt"
 mkdir -p "${target_seed}/.gitea" "${target_seed}/openspec"
 printf 'stale workflow\n' >"${target_seed}/.gitea/stale.yml"
 printf 'stale spec\n' >"${target_seed}/openspec/stale.md"
+printf 'stale agent rules\n' >"${target_seed}/AGENTS.md"
+printf 'stale claude rules\n' >"${target_seed}/CLAUDE.md"
+for private_dir in .claude .codex .agents .cursor .gemini .opencode; do
+  mkdir -p "${target_seed}/${private_dir}"
+  printf 'stale configuration\n' >"${target_seed}/${private_dir}/stale.txt"
+done
 git -C "${target_seed}" add .
 git -C "${target_seed}" commit -q -m "seed"
 git clone -q --bare "${target_seed}" "${target_bare}"
@@ -65,6 +82,48 @@ mkdir -p "${fake_bin}"
 curl_log="${test_root}/curl.log"
 export CURL_LOG="${curl_log}"
 export TARGET_BARE="${target_bare}"
+export RELEASE_FIXTURES="${test_root}/candidates"
+export UPLOADS="${test_root}/uploads"
+mkdir -p "${RELEASE_FIXTURES}" "${UPLOADS}"
+
+make_candidates() {
+  python3 - "${RELEASE_FIXTURES}" "$1" "${repo_root}/packages/emcli-native/manifest.json" <<'PYTHON'
+import hashlib
+import json
+from pathlib import Path
+import sys
+
+root, commit = Path(sys.argv[1]), sys.argv[2]
+driver = json.loads(Path(sys.argv[3]).read_text())['builtAgainstDriver']
+version = '3.2.0-rc.1'
+for target, binary, platform, arch in (
+    ('linux-amd64', 'emcli-linux-x64', 'linux', 'x64'),
+    ('linux-arm64', 'emcli-linux-arm64', 'linux', 'arm64'),
+    ('windows-amd64', 'emcli-win32-x64.exe', 'win32', 'x64'),
+):
+    folder = root / target
+    folder.mkdir(exist_ok=True)
+    packages = [f'emcli_{version}_{target.replace("-", "_")}.{extension}'
+                for extension in ('deb', 'rpm', 'tar.gz')] if platform == 'linux' else []
+    files = {}
+    for name in [binary, *packages]:
+        content = f'tested candidate {name}\n'.encode()
+        (folder / name).write_bytes(content)
+        files[name] = hashlib.sha256(content).hexdigest()
+    metadata = json.dumps({'sha256': files[binary], 'arch': arch, 'platform': platform}).encode()
+    (folder / (binary + '.json')).write_bytes(metadata)
+    files[binary + '.json'] = hashlib.sha256(metadata).hexdigest()
+    manifest = json.dumps({
+        'schemaVersion': 1, 'target': target, 'version': version, 'driver': driver,
+        'source_commit': commit, 'source_dirty': False, 'files': files,
+    }).encode()
+    (folder / 'manifest.json').write_bytes(manifest)
+    files['manifest.json'] = hashlib.sha256(manifest).hexdigest()
+    (folder / 'SHA256SUMS').write_text(''.join(f'{digest}  {name}\n' for name, digest in sorted(files.items())))
+PYTHON
+}
+
+make_candidates "${initial_source_sha1}"
 
 cat >"${fake_bin}/curl" <<'EOF'
 #!/usr/bin/env bash
@@ -73,6 +132,8 @@ set -euo pipefail
 output=""
 url=""
 method="GET"
+upload_file=""
+payload=""
 while (($#)); do
   case "$1" in
     --output|-o)
@@ -83,7 +144,15 @@ while (($#)); do
       method=$2
       shift 2
       ;;
-    --header|-H|--data|--data-binary)
+    --data-binary)
+      upload_file=${2#@}
+      shift 2
+      ;;
+    --data)
+      payload=$2
+      shift 2
+      ;;
+    --header|-H|--proto-redir)
       shift 2
       ;;
     --fail|--fail-with-body|--silent|--show-error|--location)
@@ -101,83 +170,45 @@ done
 
 printf '%s %s\n' "${method}" "${url}" >>"${CURL_LOG}"
 case "${url}" in
-  */dists/jammy/*/binary-amd64/Packages)
-    cat >"${output}" <<'PACKAGES'
-Package: emcli
-Version: 1.10.0
-Architecture: amd64
-Filename: pool/jammy/main/e/emcli/emcli_1.10.0_amd64.deb
-Size: 9
-SHA256: b65ab1ed14ad372bfc5603e921bad94b9843ecfa709b9b988dea6ce4624ee581
-
-Package: another-package
-Version: 1.10.0
-Architecture: amd64
-Filename: pool/jammy/main/a/another-package/another-package_1.10.0_amd64.deb
-Size: 9
-SHA256: b65ab1ed14ad372bfc5603e921bad94b9843ecfa709b9b988dea6ce4624ee581
-
-PACKAGES
-    ;;
-  */dists/jammy/*/binary-arm64/Packages)
-    if [[ "${MISSING_ARM64:-}" == 1 ]]; then
-      : >"${output}"
-      exit 0
+  https://gitea.test/api/packages/packages/generic/emcli-*/3.2.0-rc.1/*)
+    name=${url##*/}
+    target=${url#*/generic/emcli-}
+    target=${target%%/*}
+    if [[ "${target}/${name}" == windows-amd64/manifest.json && "${MISSING_WINDOWS:-}" == 1 ]]; then
+      exit 22
     fi
-    cat >"${output}" <<'PACKAGES'
-Package: emcli
-Version: 1.10.0
-Architecture: arm64
-Filename: pool/jammy/main/e/emcli/emcli_1.10.0_arm64.deb
-Size: 9
-SHA256: b65ab1ed14ad372bfc5603e921bad94b9843ecfa709b9b988dea6ce4624ee581
-
-PACKAGES
-    ;;
-  */dists/noble/*/binary-amd64/Packages)
-    cat >"${output}" <<'PACKAGES'
-Package: emcli
-Version: 1.10.0
-Architecture: amd64
-Filename: pool/noble/main/e/emcli/emcli_1.10.0_amd64.deb
-Size: 9
-SHA256: b65ab1ed14ad372bfc5603e921bad94b9843ecfa709b9b988dea6ce4624ee581
-
-PACKAGES
-    ;;
-  */dists/noble/*/binary-arm64/Packages)
-    if [[ "${MISSING_ARM64:-}" == 1 ]]; then
-      : >"${output}"
-      exit 0
+    if [[ "${name}" == *_arm64.rpm && "${TAMPER_RPM:-}" == 1 ]]; then
+      printf 'corrupted package\n' >"${output}"
+    else
+      cp "${RELEASE_FIXTURES}/${target}/${name}" "${output}"
     fi
-    cat >"${output}" <<'PACKAGES'
-Package: emcli
-Version: 1.10.0
-Architecture: arm64
-Filename: pool/noble/main/e/emcli/emcli_1.10.0_arm64.deb
-Size: 9
-SHA256: b65ab1ed14ad372bfc5603e921bad94b9843ecfa709b9b988dea6ce4624ee581
-
-PACKAGES
     ;;
   */repos/acme/mirror/releases)
+    python3 - "${payload}" "$(git --git-dir="${TARGET_BARE}" rev-parse main)" <<'PYTHON'
+import json
+import sys
+
+payload = json.loads(sys.argv[1])
+assert payload['tag_name'] == 'v3.2.0-rc.1'
+assert payload['target_commitish'] == sys.argv[2]
+assert payload['draft'] is True and payload['prerelease'] is True
+PYTHON
     printf '{"id":42,"upload_url":"https://uploads.github.test/repos/acme/mirror/releases/42/assets{?name,label}"}\n'
     ;;
   */repos/acme/mirror/releases/42)
     if [[ "${method}" == PATCH && "${FAIL_PATCH:-}" == 1 ]]; then
-      git --git-dir="${TARGET_BARE}" update-ref refs/tags/v1.10.0 main
+      git --git-dir="${TARGET_BARE}" update-ref refs/tags/v3.2.0-rc.1 main
       exit 22
     fi
     printf '{"id":42,"draft":false}\n'
     ;;
   *uploads.github.test*/assets*)
-    if [[ "${FAIL_UPLOAD:-}" == 1 ]]; then
+    name=${url##*name=}
+    if [[ "${name}" == *.rpm && "${FAIL_UPLOAD:-}" == 1 ]]; then
       exit 22
     fi
+    cp "${upload_file}" "${UPLOADS}/${name}"
     printf '{"state":"uploaded"}\n'
-    ;;
-  *.deb)
-    printf 'fake deb\n' >"${output}"
     ;;
   *)
     printf 'unexpected URL: %s\n' "${url}" >&2
@@ -193,6 +224,7 @@ run_release() {
     GITEA_USERNAME="gitea-user" \
     GITEA_TOKEN="gitea-token" \
     GH_TOKEN="github-token" \
+    GITHUB_SHA=ffffffffffffffffffffffffffffffffffffffff \
     bash "${script_path}" \
       --source-repo "${source_repo}" \
       --source-ref main \
@@ -203,10 +235,7 @@ run_release() {
       --github-upload-url https://uploads.github.test \
       --gitea-url https://gitea.test \
       --gitea-package-owner packages \
-      --cmake-project-name EncosMotorCLI \
-      --debian-package-name emcli \
-      --debian-distributions jammy,noble \
-      --debian-architectures amd64,arm64
+      "$@"
 }
 
 run_release
@@ -220,12 +249,28 @@ test ! -e "${mirror_checkout}/.gitmodules"
 test ! -e "${mirror_checkout}/.gitea"
 test ! -e "${mirror_checkout}/openspec"
 test ! -e "${mirror_checkout}/stale.txt"
+for internal_root in "${mirror_checkout}" "${mirror_checkout}/include"; do
+  test ! -e "${internal_root}/AGENTS.md"
+  test ! -e "${internal_root}/CLAUDE.md"
+  for private_dir in .claude .codex .agents .cursor .gemini .opencode; do
+    test ! -e "${internal_root}/${private_dir}"
+  done
+done
 test ! -e "${mirror_checkout}/external/example/.git"
 test ! -e "${mirror_checkout}/external/example/vendor/leaf/.git"
-test "$(git -C "${mirror_checkout}" log -1 --format=%s)" = "release: 发布v1.10.0"
-test "$(grep -c 'uploads.github.test.*/assets' "${curl_log}")" -eq 4
-grep -q 'name=emcli_1.10.0_amd64_jammy.deb' "${curl_log}"
-grep -q 'name=emcli_1.10.0_amd64_noble.deb' "${curl_log}"
+test "$(git -C "${mirror_checkout}" log -1 --format=%s)" = "release: 发布v3.2.0-rc.1"
+test "$(grep -c 'uploads.github.test.*/assets' "${curl_log}")" -eq 10
+for arch in amd64 arm64; do
+  for format in deb rpm tar.gz; do
+    cmp "${RELEASE_FIXTURES}/linux-${arch}/emcli_3.2.0-rc.1_linux_${arch}.${format}" \
+      "${UPLOADS}/emcli_3.2.0-rc.1_linux_${arch}.${format}"
+  done
+done
+cmp "${RELEASE_FIXTURES}/linux-amd64/emcli-linux-x64" "${UPLOADS}/emcli-linux-x64"
+cmp "${RELEASE_FIXTURES}/linux-arm64/emcli-linux-arm64" "${UPLOADS}/emcli-linux-arm64"
+cmp "${RELEASE_FIXTURES}/windows-amd64/emcli-win32-x64.exe" "${UPLOADS}/emcli-win32-x64.exe"
+test "$(wc -l <"${UPLOADS}/SHA256SUMS")" -eq 9
+(cd "${UPLOADS}" && sha256sum --strict --check SHA256SUMS)
 grep -q 'PATCH https://api.github.test/repos/acme/mirror/releases/42' "${curl_log}"
 
 commit_count_before=$(git --git-dir="${target_bare}" rev-list --count main)
@@ -237,10 +282,10 @@ test ! -s "${curl_log}"
 
 git -C "${source_repo}" switch -q -c develop
 printf 'develop snapshot\n' >"${source_repo}/develop.txt"
-printf 'cmake_minimum_required(VERSION 3.14)\nproject(EncosMotorCLI)\n' \
-  >"${source_repo}/CMakeLists.txt"
+printf '{"version":"experimental"}\n' >"${source_repo}/package.json"
 git -C "${source_repo}" add .
 git -C "${source_repo}" commit -q -m "develop snapshot"
+develop_sha1=$(git -C "${source_repo}" rev-parse HEAD)
 git -C "${source_repo}" switch -q main
 
 multi_branch_env="${test_root}/multi-branch.env"
@@ -255,10 +300,6 @@ GITHUB_RELEASE_REPOSITORY=acme/mirror
 GITHUB_RELEASE_REPOSITORY_URL=${target_bare}
 GITEA_URL=https://gitea.test
 GITEA_PACKAGE_OWNER=packages
-CMAKE_PROJECT_NAME=EncosMotorCLI
-DEBIAN_PACKAGE_NAME=emcli
-DEBIAN_DISTRIBUTIONS=jammy,noble
-DEBIAN_ARCHITECTURES=amd64,arm64
 GITHUB_API_URL=https://api.github.test
 GITHUB_UPLOAD_URL=https://uploads.github.test
 EOF
@@ -270,19 +311,78 @@ test ! -s "${curl_log}"
 develop_checkout="${test_root}/develop-checkout"
 git clone -q --branch develop "${target_bare}" "${develop_checkout}"
 test -f "${develop_checkout}/develop.txt"
-test "$(git -C "${develop_checkout}" log -1 --format=%s)" = "release: 发布v1.10.0"
+test "$(git -C "${develop_checkout}" log -1 --format=%s)" = "release: 发布v3.2.0-rc.1"
 
 printf 'changed snapshot\n' >"${source_repo}/include/public.h"
 git -C "${source_repo}" add .
 git -C "${source_repo}" commit -q -m "changed source snapshot"
 
 : >"${curl_log}"
+PATH="${fake_bin}:${PATH}" GIT_CONFIG_GLOBAL="${git_config}" \
+  bash "${wrapper_path}" \
+    --env-file "${multi_branch_env}" \
+    --main-sha1 "${initial_source_sha1}"
+test ! -s "${curl_log}"
+main_after_pinned_wrapper=$(git --git-dir="${target_bare}" show main:include/public.h)
+test "${main_after_pinned_wrapper}" = "public header"
+test "$(git --git-dir="${target_bare}" show develop:develop.txt)" = "develop snapshot"
+
+run_release \
+  --source-sha1 "${initial_source_sha1}" \
+  --github-branch pinned \
+  --snapshot-only
+pinned_checkout="${test_root}/pinned-checkout"
+git clone -q --branch pinned "${target_bare}" "${pinned_checkout}"
+grep -q '^public header$' "${pinned_checkout}/include/public.h"
+
 set +e
-MISSING_ARM64=1 run_release
+run_release \
+  --source-sha1 "${develop_sha1}" \
+  --github-branch rejected \
+  --snapshot-only >/dev/null 2>&1
+unrelated_sha1_status=$?
+set -e
+test "${unrelated_sha1_status}" -ne 0
+test -z "$(git --git-dir="${target_bare}" branch --list rejected)"
+
+set +e
+run_release \
+  --source-sha1 ffffffffffffffffffffffffffffffffffffffff \
+  --github-branch missing \
+  --snapshot-only >/dev/null 2>&1
+missing_sha1_status=$?
+set -e
+test "${missing_sha1_status}" -ne 0
+test -z "$(git --git-dir="${target_bare}" branch --list missing)"
+
+: >"${curl_log}"
+if run_release >"${test_root}/wrong-commit.log" 2>&1; then
+  printf 'release unexpectedly accepted candidates from another commit\n' >&2
+  exit 1
+fi
+grep -q 'Candidate belongs to another commit' "${test_root}/wrong-commit.log"
+test "$(git --git-dir="${target_bare}" rev-list --count main)" = "${commit_count_after}"
+test "$(grep -c 'github.test' "${curl_log}" || true)" -eq 0
+make_candidates "$(git -C "${source_repo}" rev-parse HEAD)"
+
+: >"${curl_log}"
+set +e
+MISSING_WINDOWS=1 run_release
 missing_status=$?
 set -e
 test "${missing_status}" -ne 0
 test "$(git --git-dir="${target_bare}" rev-list --count main)" = "${commit_count_after}"
+test "$(grep -c 'github.test' "${curl_log}" || true)" -eq 0
+
+: >"${curl_log}"
+set +e
+TAMPER_RPM=1 run_release >"${test_root}/tampered.log" 2>&1
+tampered_status=$?
+set -e
+test "${tampered_status}" -ne 0
+grep -q 'Checksum mismatch: emcli_3.2.0-rc.1_linux_arm64.rpm' "${test_root}/tampered.log"
+test "$(git --git-dir="${target_bare}" rev-list --count main)" = "${commit_count_after}"
+test "$(grep -c 'github.test' "${curl_log}" || true)" -eq 0
 
 : >"${curl_log}"
 set +e
@@ -300,7 +400,7 @@ patch_status=$?
 set -e
 test "${patch_status}" -ne 0
 test "$(git --git-dir="${target_bare}" rev-list --count main)" = "${commit_count_after}"
-test -z "$(git --git-dir="${target_bare}" tag --list v1.10.0)"
+test -z "$(git --git-dir="${target_bare}" tag --list v3.2.0-rc.1)"
 grep -q 'DELETE https://api.github.test/repos/acme/mirror/releases/42' "${curl_log}"
 
 unsafe_urls=(

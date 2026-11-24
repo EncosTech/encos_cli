@@ -1,0 +1,27 @@
+{
+  "name": "@encos/emcli",
+  "version": "2.1.4",
+  "type": "module",
+  "description": "Encos motor debugger",
+  "packageManager": "pnpm@12.15.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "resolve:driver": "pnpm --filter @encos/emcli-native resolve:driver",
+    "build:perf": "pnpm --filter @encos/emcli-native build:perf",
+    "build:single": "pnpm build:perf && pnpm build && node scripts/build-single.mjs",
+    "test:single": "node scripts/test-single-platform.mjs"
+  },
+  "dependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.3"
+  },
+  "devDependencies": {
+    "postject": "1.0.0-alpha.6"
+  },
+  "license": "MIT"
+}

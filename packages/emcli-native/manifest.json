@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "package": "@encos/emcli-native",
+  "version": "0.1.0",
+  "nativeAbi": 1,
+  "napi": 8,
+  "builtAgainstDriver": "4.3.1",
+  "driverPeerRange": ">=4.3.1 <4.4.0",
+  "platforms": {
+    "linux-x64-gnu": "@encos/emcli-native-linux-x64-gnu",
+    "linux-arm64-gnu": "@encos/emcli-native-linux-arm64-gnu",
+    "win32-x64": "@encos/emcli-native-win32-x64"
+  }
+}
